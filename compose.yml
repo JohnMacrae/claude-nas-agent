@@ -1,5 +1,31 @@
 services:
 
+  agent:
+    build: ./agent
+    container_name: claude-agent
+    restart: unless-stopped
+    ports:
+      - "3005:3001"
+    volumes:
+      - ./flags:/flags
+      - ./logs:/logs
+      - ./output:/output
+      - ./properties.txt:/agent/properties.txt:ro
+      - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
+      # Mount host Claude Code credentials so OAuth MCPs (Gmail, GCal) work
+      - /home/john/.claude:/root/.claude:ro
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - OPEN_BRAIN_MCP_URL=${OPEN_BRAIN_MCP_URL}
+      - OPEN_BRAIN_MCP_KEY=${OPEN_BRAIN_MCP_KEY}
+      - SUPABASE_PROJECT_URL=${SUPABASE_PROJECT_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - FLAGS_DIR=/flags
+      - LOGS_DIR=/logs
+      - AGENT_DIR=/agent
+
   watchdog:
     build: ./watchdog
     container_name: claude-watchdog

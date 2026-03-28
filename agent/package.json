@@ -1,0 +1,12 @@
+{
+  "name": "claude-nas-agent-scheduler",
+  "version": "1.0.0",
+  "description": "Scheduler for the claude-nas-agent",
+  "main": "scheduler.js",
+  "scripts": {
+    "start": "node scheduler.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
