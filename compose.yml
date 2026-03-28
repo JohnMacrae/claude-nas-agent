@@ -1,0 +1,29 @@
+services:
+
+  watchdog:
+    build: ./watchdog
+    container_name: claude-watchdog
+    restart: unless-stopped
+    ports:
+      - "3004:3001"
+    volumes:
+      - ./flags:/flags
+      - ./logs:/logs
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
+      - PUSHOVER_USER=${PUSHOVER_USER}
+      - FLAGS_DIR=/flags
+      - LOGS_DIR=/logs
+      - POLL_INTERVAL_MS=${WATCHDOG_POLL_MS:-300000}
+      - WARN_HOURLY_USD=0.63
+      - PAUSE_HOURLY_USD=1.27
+      - KILL_HOURLY_USD=2.54
+      - WARN_DAILY_USD=2.54
+      - PAUSE_DAILY_USD=3.81
+      - KILL_DAILY_USD=6.35
+      - WARN_SESSIONS_PER_HOUR=4
+      - PAUSE_SESSIONS_PER_HOUR=6
+      - KILL_SESSIONS_PER_HOUR=8
+      - WARN_SESSION_TOKENS=40000
+      - KILL_SESSION_TOKENS=60000
