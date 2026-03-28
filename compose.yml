@@ -13,9 +13,9 @@ services:
       - ./properties.txt:/agent/properties.txt:ro
       - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
       # Mount host Claude Code credentials so OAuth MCPs (Gmail, GCal) work
-      - /home/john/.claude:/root/.claude:ro
+      - /home/john/.claude:/home/agent/.claude:ro
+      - /home/john/.claude.json:/home/agent/.claude.json:ro
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - OPEN_BRAIN_MCP_URL=${OPEN_BRAIN_MCP_URL}

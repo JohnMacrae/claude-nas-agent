@@ -161,13 +161,19 @@ Schema: `life-engine-schema.sql`
 
 ## MCP Integrations
 
-| MCP | URL | Auth |
-|-----|-----|------|
-| Open Brain | `https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/open-brain-mcp` | Bearer key |
-| Gmail | `https://gmail.mcp.claude.com/mcp` | claudeAiOauth (from `~/.claude`) |
-| Google Calendar | `https://gcal.mcp.claude.com/mcp` | claudeAiOauth (from `~/.claude`) |
+| MCP | Auth |
+|-----|------|
+| Open Brain | Account-level claude.ai MCP (auto-discovered via OAuth) |
+| Gmail | Account-level claude.ai MCP (auto-discovered via OAuth) |
+| Google Calendar | Account-level claude.ai MCP (auto-discovered via OAuth) |
 
-The agent container mounts `/home/john/.claude` read-only so OAuth tokens set up interactively on the host are available inside the container.
+All three are configured as account-level MCPs in the claude.ai web interface and auto-discovered by Claude Code when it authenticates via OAuth. No `--mcp-config` flag is needed.
+
+The agent container runs without `ANTHROPIC_API_KEY` so Claude Code authenticates via the OAuth session in `~/.claude`. Two host paths are mounted read-only:
+- `/home/john/.claude` → `/home/agent/.claude` (credentials, session state)
+- `/home/john/.claude.json` → `/home/agent/.claude.json` (main config)
+
+The `agent` user inside the container is created with UID 1002 (matching host user `john`) so it can read the host-owned credential files.
 
 ---
 
@@ -225,7 +231,7 @@ Reference: `docs/alto-api.pdf`
 3. ✅ Agent container — built and running
 4. ✅ Telegram — bot connected (OBBot / @John_OBBot), chat ID confirmed
 5. ✅ Life Engine schema — applied to Supabase, habits seeded
-6. 🔲 First live session validated
+6. ✅ First live session validated — Gmail, GCal, Open Brain all connected
 7. 🔲 Approval UI
 8. 🔲 Alto API integration (credentials pending)
 9. 🔲 OpenRent / browser skills (Phase 2)

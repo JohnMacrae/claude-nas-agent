@@ -68,28 +68,6 @@ function flagExists(name) {
   }
 }
 
-function buildMcpConfig() {
-  return JSON.stringify({
-    mcpServers: {
-      'open-brain': {
-        type: 'sse',
-        url: process.env.OPEN_BRAIN_MCP_URL,
-        headers: {
-          Authorization: `Bearer ${process.env.OPEN_BRAIN_MCP_KEY}`,
-        },
-      },
-      gmail: {
-        type: 'sse',
-        url: 'https://gmail.mcp.claude.com/mcp',
-      },
-      gcal: {
-        type: 'sse',
-        url: 'https://gcal.mcp.claude.com/mcp',
-      },
-    },
-  });
-}
-
 // --- Session launcher ---
 
 async function launchSession(trigger) {
@@ -114,7 +92,6 @@ async function launchSession(trigger) {
     return;
   }
 
-  const mcpConfig = buildMcpConfig();
   const now = new Date();
   const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.`;
 
@@ -122,7 +99,6 @@ async function launchSession(trigger) {
     '--print',
     '--dangerously-skip-permissions',
     '--system-prompt', systemPrompt,
-    '--mcp-config', mcpConfig,
     '--max-budget-usd', '1.50',
     prompt,
   ];
@@ -134,7 +110,7 @@ async function launchSession(trigger) {
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
   const proc = spawn('claude', args, {
-    env: { ...process.env, HOME: process.env.HOME || '/root' },
+    env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

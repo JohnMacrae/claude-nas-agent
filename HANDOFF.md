@@ -1,7 +1,7 @@
 # HANDOFF.md — Claude NAS Agent
 
 This document captures the exact state of the project for continuity across conversations.
-Last updated: 2026-03-28
+Last updated: 2026-03-28 (evening — MCP auth fixed, first live session complete)
 
 ---
 
@@ -29,13 +29,17 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
   - Two starter habits seeded: Morning walk (weekdays), Evening wind-down (daily)
   - Supabase service key in `.env`
 - Agent container built and running
-  - Dockerfile: Node 20 + Claude Code
+  - Dockerfile: Node 20 + Claude Code; agent user created with UID 1002 (matches host `john`)
   - `scheduler.js` — fires sessions at 06:00/12:00/18:00 and every 2h property checks
   - `telegram.js` — send/receive utility called by agent via Bash tool
   - HTTP control server on port 3005
     - `GET http://dnas:3005/status` — session state, flags
     - `POST http://dnas:3005/trigger` body `{"type":"morning"}` — fire any session type
-  - Mounts `~/.claude` from host so Gmail/GCal OAuth tokens work inside container
+  - No `ANTHROPIC_API_KEY` in agent — authenticates via claude.ai OAuth instead
+  - Mounts `/home/john/.claude` and `/home/john/.claude.json` read-only into container
+  - No `--mcp-config` flag — Gmail, GCal, Open Brain auto-discovered as account MCPs
+- **First live session completed** — Gmail, GCal, Open Brain all confirmed connected
+  - Session read real emails (electrical invoices) and live calendar data
 - Telegram bot connected
   - Bot name: OBBot, username: @John_OBBot
   - Token: `TELEGRAM_BOT_TOKEN` in `.env`
@@ -44,18 +48,12 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
   - Agent receives via `node /agent/telegram.js wait-reply "prompt" [timeout_secs]`
 - Updated system prompt: `agent-system-prompt.md` (finalised)
 
-### 🔲 Next — First Live Session
-- Trigger a manual session to validate end-to-end:
-  ```bash
-  curl -X POST http://dnas:3005/trigger \
-    -H 'Content-Type: application/json' \
-    -d '{"type":"manual"}'
-  docker logs -f claude-agent
-  ```
-- Verify: Telegram message arrives, session log written to `/logs/`
-- Check MCP connections work (Open Brain, Gmail, GCal)
+### ✅ First Live Session — Done
+- Gmail, GCal, Open Brain all connecting and returning live data
+- Session read real emails and calendar events
+- Telegram send/receive confirmed working via `telegram.js`
 
-### 🔲 After That
+### 🔲 Next
 - Approval UI (simple web page for approving write actions)
 - Alto API integration (credentials pending)
 - Dry-run mode before going live on schedule
@@ -138,7 +136,8 @@ Telegram is personal/lifestyle only. Property matters stay on email + Pushover.
 ## Environment Variables
 
 ```
-# Anthropic
+# Anthropic — only used by watchdog (direct API calls for spend tracking)
+# NOT set in agent service — agent authenticates via claude.ai OAuth instead
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Pushover
@@ -168,14 +167,19 @@ ALTO_PASSWORD=
 
 ## MCP Connections
 
-| MCP | URL | Notes |
-|-----|-----|-------|
-| Open Brain | `https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/open-brain-mcp` | Key in .env |
-| Gmail | `https://gmail.mcp.claude.com/mcp` | claudeAiOauth from `~/.claude/.credentials.json` |
-| Google Calendar | `https://gcal.mcp.claude.com/mcp` | claudeAiOauth from `~/.claude/.credentials.json` |
+All three MCPs are account-level integrations configured in claude.ai and auto-discovered when Claude Code authenticates via OAuth. No `--mcp-config` flag is used.
 
-`~/.claude` is mounted read-only into the agent container at `/root/.claude`.
-OAuth tokens from interactive Claude Code sessions on the host are inherited automatically.
+| MCP | Status |
+|-----|--------|
+| Open Brain | ✅ Connected (account MCP, auto-discovered) |
+| Gmail | ✅ Connected (account MCP, auto-discovered) |
+| Google Calendar | ✅ Connected (account MCP, auto-discovered) |
+
+**Auth setup:**
+- Agent runs without `ANTHROPIC_API_KEY` — uses claude.ai OAuth
+- `/home/john/.claude` mounted at `/home/agent/.claude:ro`
+- `/home/john/.claude.json` mounted at `/home/agent/.claude.json:ro`
+- `agent` user in container has UID 1002 (matches host `john`) so it can read `rw-------` credential files
 
 Open Brain task conventions:
 - Tasks use `COMPLETED`, `PENDING`, `CARRIED OVER` prefixes with dates
@@ -277,5 +281,5 @@ Start a new conversation with:
 
 "Continue building the claude-nas-agent. The repo is at github.com/JohnMacrae/claude-nas-agent
 — read HANDOFF.md for full context. Watchdog and agent containers are both running.
-Telegram is connected (OBBot). Life Engine schema is applied to Supabase.
-Next step is validating the first live session end-to-end."
+Gmail, GCal, Open Brain MCP connections all confirmed working. Telegram works via telegram.js.
+First live session complete. Next step is the Approval UI."
