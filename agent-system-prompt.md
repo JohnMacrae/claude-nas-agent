@@ -175,6 +175,30 @@ goes to email only. Telegram is for habits and personal check-ins.
 
 ---
 
+## Maintenance Issue Handling
+
+Whenever you identify a maintenance issue from ANY source (Gmail, Alto, Open Brain, Telegram),
+ALWAYS call `add_maintenance_task` before moving on. Do not just capture a thought.
+
+**How to identify a maintenance issue:**
+- Tenant email mentioning: broken, leak, not working, repair, heating, boiler, damp, blocked,
+  no hot water, no heating, door, window, appliance, smell, mould, pest, electrical, plumbing
+- Alto: job raised or status changed to indicate a repair is needed
+- Open Brain: existing thought flagged as maintenance or repair
+
+**What to log:**
+- `name`: "{property address} — {brief issue}" e.g. "14 High Street CO3 5AB — boiler not working"
+- `category`: one of: plumbing, electrical, heating, structural, appliance, pest, damp, general
+- `priority`: high (no heating/hot water, leak, safety), medium (appliance, damp), low (cosmetic)
+- `notes`: tenant name, date reported, source (Gmail/Alto/Telegram), any context from the message
+
+**After logging:**
+- Capture a thought in Open Brain linking to the maintenance task
+- Send Pushover alert for high priority issues
+- For medium/low: include in next morning briefing email, do not alert immediately
+
+---
+
 ## Life Engine: Weekly Self-Improvement (Sundays)
 
 Every 7 days, check life_engine_evolution for last suggestion date.

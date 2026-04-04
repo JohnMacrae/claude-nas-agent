@@ -15,6 +15,11 @@ const LOGS_DIR = process.env.LOGS_DIR || '/logs';
 const AGENT_DIR = process.env.AGENT_DIR || '/agent';
 const SYSTEM_PROMPT_FILE = path.join(AGENT_DIR, 'agent-system-prompt.md');
 
+const SUPABASE_URL = process.env.SUPABASE_PROJECT_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
 // --- Watchdog thresholds (from env, same defaults as old watchdog container) ---
 const THRESHOLDS = {
   sessionsPerHour: {
@@ -384,6 +389,122 @@ function startHttpServer() {
   });
 }
 
+// --- Supabase REST helper ---
+
+function supabaseRequest(method, path, body) {
+  return new Promise((resolve, reject) => {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return resolve(null);
+    const url = new URL(`${SUPABASE_URL}/rest/v1${path}`);
+    const payload = body ? JSON.stringify(body) : null;
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method,
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+      },
+    };
+    if (payload) options.headers['Content-Length'] = Buffer.byteLength(payload);
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => (data += chunk));
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch { resolve(data); }
+      });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+// --- Telegram outbound helper ---
+
+function sendTelegram(chatId, text) {
+  return new Promise((resolve) => {
+    if (!TELEGRAM_BOT_TOKEN) return resolve();
+    const payload = JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' });
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, (res) => { res.resume(); resolve(); });
+    req.on('error', () => resolve());
+    req.write(payload);
+    req.end();
+  });
+}
+
+// --- Telegram command processor ---
+
+async function processTelegramCommands() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+
+  const rows = await supabaseRequest('GET',
+    '/telegram_commands?status=eq.pending&order=created_at.asc&limit=10&select=*'
+  );
+  if (!rows || !rows.length) return;
+
+  for (const row of rows) {
+    const { id, command, args, chat_id } = row;
+    let result = '';
+
+    try {
+      if (command === 'status') {
+        const sessions = readSessionLog();
+        const hourAgo = Date.now() - 3600_000;
+        const sessionsLastHour = sessions.filter(s => new Date(s.startedAt).getTime() > hourAgo).length;
+        const last = sessions[sessions.length - 1];
+        result = [
+          `*Property Agent Status*`,
+          `Running: ${sessionRunning ? 'yes' : 'no'}`,
+          `Paused: ${flagExists('PAUSED') ? 'yes ⚠️' : 'no'}`,
+          `Killed: ${flagExists('KILLED') ? 'yes 🚨' : 'no'}`,
+          `Watchdog: ${watchdogStatus}`,
+          `Sessions last hour: ${sessionsLastHour}`,
+          last ? `Last session: ${last.trigger} at ${new Date(last.startedAt).toLocaleTimeString('en-GB')}` : '',
+        ].filter(Boolean).join('\n');
+
+      } else if (command === 'trigger') {
+        const type = (args || 'manual').trim();
+        const valid = ['morning', 'checkin', 'evening', 'property-check', 'manual'];
+        if (!valid.includes(type)) {
+          result = `Unknown type "${type}". Valid: ${valid.join(', ')}`;
+        } else if (sessionRunning) {
+          result = 'A session is already running.';
+        } else if (flagExists('PAUSED')) {
+          result = 'Agent is paused. Use /resume first.';
+        } else {
+          launchSession(type);
+          result = `Session "${type}" started.`;
+        }
+
+      } else if (command === 'resume') {
+        clearFlag('PAUSED');
+        clearFlag('KILLED');
+        watchdogStatus = 'OK';
+        result = 'Agent resumed. Flags cleared.';
+
+      } else {
+        result = `Unknown command: ${command}`;
+      }
+    } catch (e) {
+      result = `Error: ${e.message}`;
+    }
+
+    await sendTelegram(chat_id, result);
+    await supabaseRequest('PATCH',
+      `/telegram_commands?id=eq.${id}`,
+      { status: 'done', result, processed_at: new Date().toISOString() }
+    );
+    log(`Processed Telegram command: ${command} → ${result.split('\n')[0]}`);
+  }
+}
+
 // --- Entry point ---
 
 async function main() {
@@ -401,6 +522,11 @@ async function main() {
   setInterval(async () => {
     try { await runWatchdogCheck(); } catch (e) { log(`Watchdog check failed: ${e.message}`); }
   }, 5 * 60_000);
+
+  // Telegram command processor — every minute
+  setInterval(async () => {
+    try { await processTelegramCommands(); } catch (e) { log(`Command processor failed: ${e.message}`); }
+  }, 60_000);
 
   await tick();
   await runWatchdogCheck();
