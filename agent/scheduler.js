@@ -219,7 +219,7 @@ async function runWatchdogCheck() {
 
 // --- Session launcher ---
 
-async function launchSession(trigger) {
+async function launchSession(trigger, context = null) {
   if (sessionRunning) {
     log(`Session already running — skipping ${trigger}`);
     return;
@@ -242,7 +242,7 @@ async function launchSession(trigger) {
   }
 
   const now = new Date();
-  const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.`;
+  const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.${context ? ` Context: ${context}` : ''}`;
 
   const args = [
     '--print',
@@ -481,6 +481,16 @@ async function processTelegramCommands() {
         } else {
           launchSession(type);
           result = `Session "${type}" started.`;
+        }
+
+      } else if (command === 'maintenance') {
+        if (!args) {
+          result = 'No maintenance details provided.';
+        } else if (sessionRunning) {
+          result = 'A session is already running — maintenance task will be picked up in the next property-check.';
+        } else {
+          launchSession('manual', `Log this property maintenance issue using add_maintenance_task: ${args}`);
+          result = `Logging maintenance task: "${args}"`;
         }
 
       } else if (command === 'resume') {
