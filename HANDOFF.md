@@ -1,81 +1,43 @@
-# HANDOFF.md — Claude NAS Agent
+# HANDOFF.md — Property Agent
 
-This document captures the exact state of the project for continuity across conversations.
-Last updated: 2026-03-28 (evening — MCP auth fixed, first live session complete)
+Last updated: 2026-04-04
 
 ---
 
 ## What This Project Is
 
-An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas`, Tailscale IP `100.98.167.107`). It manages property management tasks and personal productivity by connecting to Gmail, Google Calendar, Open Brain (MCP), and the Alto property management API. It runs on a schedule, reacts to events, and pushes output via Pushover notifications, email, and Telegram.
+An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas`, Tailscale IP `100.98.167.107`). It manages 59 residential rental properties and personal productivity. It runs as a subagent of Open Brain (OB1), which can trigger it via the `trigger_property_agent` MCP tool, and also runs on its own schedule.
 
 ---
 
 ## Current State
 
 ### ✅ Done
-- Anthropic API key created, hard spend cap set at console.anthropic.com
-- Pushover set up and tested on iOS (token + user key in `.env`)
-- Watchdog container built, running, and end-to-end tested
-  - Detects oversized sessions, fires Pushover notification correctly
-  - Status endpoint: `http://dnas:3004/status`
-  - Resume endpoint: `POST http://dnas:3004/resume`
-- ntfy was trialled and dropped — Pushover is the only alert channel
-- Repo created at `github.com/JohnMacrae/claude-nas-agent`
-- Life Engine integrated into agent design (Option B — not running as separate loop)
-  - Life Engine schema SQL written and **applied** to Supabase
-  - Tables created: `life_engine_habits`, `life_engine_habit_completions`,
-    `life_engine_checkins`, `life_engine_briefings`, `life_engine_evolution`
-  - Two starter habits seeded: Morning walk (weekdays), Evening wind-down (daily)
-  - Supabase service key in `.env`
-- Agent container built and running
-  - Dockerfile: Node 20 + Claude Code; agent user created with UID 1002 (matches host `john`)
-  - `scheduler.js` — fires sessions at 06:00/12:00/18:00 and every 2h property checks
-  - `telegram.js` — send/receive utility called by agent via Bash tool
-  - HTTP control server on port 3005
-    - `GET http://dnas:3005/status` — session state, flags
-    - `POST http://dnas:3005/trigger` body `{"type":"morning"}` — fire any session type
-  - No `ANTHROPIC_API_KEY` in agent — authenticates via claude.ai OAuth instead
-  - Mounts `/home/john/.claude` and `/home/john/.claude.json` read-only into container
-  - No `--mcp-config` flag — Gmail, GCal, Open Brain auto-discovered as account MCPs
-- **First live session completed** — Gmail, GCal, Open Brain all confirmed connected
-  - Session read real emails (electrical invoices) and live calendar data
-- Telegram bot connected
-  - Bot name: OBBot, username: @John_OBBot
-  - Token: `TELEGRAM_BOT_TOKEN` in `.env`
-  - Chat ID: `725925511` (`TELEGRAM_CHAT_ID` in `.env`)
-  - Agent sends via `node /agent/telegram.js send "message"`
-  - Agent receives via `node /agent/telegram.js wait-reply "prompt" [timeout_secs]`
-- Updated system prompt: `agent-system-prompt.md` (finalised)
-
-### ✅ First Live Session — Done
-- Gmail, GCal, Open Brain all connecting and returning live data
-- Session read real emails and calendar events
-- Telegram send/receive confirmed working via `telegram.js`
+- Anthropic API key created, hard spend cap set
+- Pushover set up and tested (token + user key in `.env`)
+- Watchdog merged into `scheduler.js` — was a separate container (`claude-watchdog`), now removed
+- Repo at `github.com/JohnMacrae/claude-nas-agent`
+- Life Engine integrated into scheduled sessions
+  - Schema moved to `OB1/schemas/life-engine/schema.sql` (canonical source)
+  - Tables applied to Supabase: `life_engine_habits`, `life_engine_habit_completions`, `life_engine_checkins`, `life_engine_briefings`, `life_engine_evolution`
+  - Two starter habits seeded
+- property-agent container running on `agent-net` Docker network
+- **OB1 containerised** — was a Supabase Edge Function, now runs locally as `ob1` container on port 8100
+  - MCP endpoint no longer public — only reachable on Tailscale network
+  - `trigger_property_agent` tool added to OB1's MCP server
+  - property-agent connects to OB1 at `http://ob1:8000` (internal Docker)
+- Telegram capture deployed as Supabase Edge Function
+  - Bot: OBBot / @John_OBBot, token in `.env`, chat ID 725925511
+  - Webhook: `https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/telegram-capture`
+  - End-to-end tested — messages captured to `thoughts` table ✓
+- Slack capture working (pre-existing Edge Function `ingest-thought`) ✓
+- First live session completed — Gmail, GCal, Open Brain all confirmed
 
 ### 🔲 Next
 - Approval UI (simple web page for approving write actions)
 - Alto API integration (credentials pending)
-- Dry-run mode before going live on schedule
+- Remove old `claude.ai Open Brain` Supabase connector from claude.ai → Settings → Connectors
 - OpenRent/Rentr browser skills (Phase 2)
-
----
-
-## Life Engine Integration Design
-
-Life Engine is NOT a separate loop or stack. It is integrated into the
-existing scheduled agent sessions. Key decisions:
-
-| Life Engine feature | How integrated |
-|---------------------|---------------|
-| Morning habits reminder | Appended to 06:00 morning session, sent via Telegram |
-| Mood/energy check-in | New 12:00 session (checkin trigger) |
-| Evening summary | New 18:00 session (evening trigger) |
-| Habit completion logging | Via Telegram replies during any session |
-| Weekly self-improvement | Sunday sessions check evolution table |
-| Morning property briefing | Unchanged — email only, no Telegram |
-
-Telegram is personal/lifestyle only. Property matters stay on email + Pushover.
 
 ---
 
@@ -83,81 +45,81 @@ Telegram is personal/lifestyle only. Property matters stay on email + Pushover.
 
 | Item | Value |
 |------|-------|
-| NAS hostname | `dnas` |
+| NAS hostname | `dnas` (Tailscale alias) |
 | Tailscale IP | `100.98.167.107` |
 | NAS user | `john` |
-| OS | Debian bookworm / Ubuntu 24.04 |
-| Docker | Engine (not Desktop) — use `docker compose` not `docker-compose` |
-| Compose filename | `compose.yml` (not docker-compose.yml) |
+| Docker root | `/volume1/docker/` |
 | Stack root | `/volume1/docker/claude-agent/` |
+| OB1 root | `/volume1/docker/OB1/` |
+| Docker network | `agent-net` (external, shared) |
 | Repo | `git@github.com:JohnMacrae/claude-nas-agent.git` |
-| OB1 repo | `/volume1/docker/OB1` |
 
-### Port allocations on dnas
+### Port allocations
+
 | Port | Service |
 |------|---------|
-| 3004 | Watchdog (`http://dnas:3004/status`, `POST /resume`) |
-| 3005 | Agent control (`http://dnas:3005/status`, `POST /trigger`) |
+| 3005 | property-agent control (`GET /status`, `POST /trigger`, `POST /resume`) |
+| 8000 | Portainer — do not use |
+| 8100 | OB1 MCP server (external host port → internal 8000) |
 
 ---
 
-## File Structure
+## Containers
 
 ```
-/volume1/docker/claude-agent/
-├── compose.yml
-├── .env                        # NEVER committed
-├── .env.example
-├── .gitignore
-├── README.md
-├── HANDOFF.md
-├── agent-system-prompt.md      # Finalised system prompt
-├── life-engine-schema.sql      # Applied to Supabase ✅
-├── docs/                       # Gitignored
-│   └── alto-api.pdf
-├── properties.txt              # Gitignored — 59 property addresses
-├── watchdog/                   # ✅ Running
-│   ├── watchdog.js
-│   ├── package.json
-│   └── Dockerfile
-├── agent/                      # ✅ Running
-│   ├── scheduler.js            # Schedule + HTTP control server
-│   ├── telegram.js             # Telegram send/receive utility
-│   ├── package.json
-│   └── Dockerfile
-├── approval-ui/                # 🔲 Next
-├── flags/                      # Runtime, gitignored
-├── logs/                       # Runtime, gitignored
-└── output/                     # Runtime, gitignored
+docker network: agent-net
+  ├── ob1            (port 8100:8000) — Open Brain MCP server
+  └── property-agent (port 3005:3001) — Claude Code scheduler
+```
+
+Start both:
+```bash
+docker network create agent-net   # only needed once
+cd /volume1/docker/OB1 && docker compose up -d
+cd /volume1/docker/claude-agent && docker compose up -d
 ```
 
 ---
 
-## Environment Variables
+## MCP Connections (inside property-agent container)
+
+```bash
+docker exec -it property-agent claude mcp list
+```
+
+| Name | URL | Status |
+|------|-----|--------|
+| open-brain | http://ob1:8000 | ✅ Local Docker |
+| Gmail | https://gmail.mcp.claude.com/mcp | ✅ claude.ai account MCP |
+| Google Calendar | https://gcal.mcp.claude.com/mcp | ✅ claude.ai account MCP |
+| Meal Planning | Supabase Edge Function | ✅ |
+| Family Calendar | Supabase Edge Function | ✅ |
+| Home Maintenance | Supabase Edge Function | ✅ |
+| Household Knowledge | Supabase Edge Function | ✅ |
+
+Note: `claude.ai Open Brain` (old Supabase Edge Function connector) should still be removed from claude.ai → Settings → Connectors.
+
+---
+
+## Environment Variables (.env)
 
 ```
-# Anthropic — only used by watchdog (direct API calls for spend tracking)
-# NOT set in agent service — agent authenticates via claude.ai OAuth instead
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Pushover
+ANTHROPIC_API_KEY=          # Used by watchdog for spend tracking
 PUSHOVER_TOKEN=
 PUSHOVER_USER=
-
-# Watchdog timing
 WATCHDOG_POLL_MS=300000
+TELEGRAM_BOT_TOKEN=         # OBBot
+TELEGRAM_CHAT_ID=725925511
 
-# Telegram
-TELEGRAM_BOT_TOKEN=        # OBBot token from @BotFather
-TELEGRAM_CHAT_ID=725925511 # John's Telegram chat ID
+# Open Brain — local container
+OPEN_BRAIN_MCP_URL=http://ob1:8000
+OPEN_BRAIN_MCP_KEY=68d1a7500ae7f9b729b99a6eff48f99a7214eaf8c05eb9cef00ca8ed1c5bf737
 
-# Open Brain / Supabase
-OPEN_BRAIN_MCP_URL=https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/open-brain-mcp
-OPEN_BRAIN_MCP_KEY=        # Open Brain MCP key
+# Supabase (for Life Engine tables)
 SUPABASE_PROJECT_URL=https://tvoyukxvvgdambudjdbq.supabase.co
-SUPABASE_SERVICE_KEY=      # From Supabase → Project Settings → API → service_role
+SUPABASE_SERVICE_KEY=
 
-# Alto (credentials not yet obtained)
+# Alto (pending)
 ALTO_DATAFEED_ID=
 ALTO_USERNAME=
 ALTO_PASSWORD=
@@ -165,96 +127,46 @@ ALTO_PASSWORD=
 
 ---
 
-## MCP Connections
+## Watchdog (merged into scheduler.js)
 
-All three MCPs are account-level integrations configured in claude.ai and auto-discovered when Claude Code authenticates via OAuth. No `--mcp-config` flag is used.
-
-| MCP | Status |
-|-----|--------|
-| Open Brain | ✅ Connected (account MCP, auto-discovered) |
-| Gmail | ✅ Connected (account MCP, auto-discovered) |
-| Google Calendar | ✅ Connected (account MCP, auto-discovered) |
-
-**Auth setup:**
-- Agent runs without `ANTHROPIC_API_KEY` — uses claude.ai OAuth
-- `/home/john/.claude` mounted at `/home/agent/.claude:ro`
-- `/home/john/.claude.json` mounted at `/home/agent/.claude.json:ro`
-- `agent` user in container has UID 1002 (matches host `john`) so it can read `rw-------` credential files
-
-Open Brain task conventions:
-- Tasks use `COMPLETED`, `PENDING`, `CARRIED OVER` prefixes with dates
-- Reliable retrieval: `list_thoughts` with `days:14`, `type:"task"`, `limit:20`
-
----
-
-## Scheduling Design
-
-| Time | Days | Trigger | Action |
-|------|------|---------|--------|
-| 06:00 | Mon–Fri, non-public-holiday | Fixed | Morning briefing (email) + habits reminder (Telegram) |
-| 08:00–18:00 | Mon–Fri, non-public-holiday | Every 2 hours | Property check and act |
-| 12:00 | Mon–Fri, non-public-holiday | Fixed | Mood/energy check-in (Telegram) |
-| 18:00 | Mon–Fri, non-public-holiday | Fixed | Evening summary (Telegram) |
-| Any | Any | New Open Brain item since last run | Early wake |
-| 18:00–06:00 | Any | — | Silent |
-| Sat–Sun | Any | — | Silent unless manually triggered |
-| Public holidays | Any | — | Silent unless manually triggered |
-| Sunday weekly | Any | — | Self-improvement review (if 7+ days since last) |
-
-UK public holidays: fetch from `https://www.gov.uk/bank-holidays.json` at scheduler startup.
-
----
-
-## Agent System Prompt
-
-Finalised. See `agent-system-prompt.md` in this repo.
-Key design decisions:
-- Property briefing → email only (no Telegram)
-- Telegram → personal/lifestyle only (habits, check-ins, evening summary)
-- Life Engine tables → Open Brain Supabase project
-- No duplicate morning briefing — one email, one Telegram habits message
-
----
-
-## Telegram Utility (agent/telegram.js)
-
-Called by the agent via Bash tool during a session.
-
-```bash
-# Send a message
-node /agent/telegram.js send "Good morning 👋"
-
-# Wait for a reply (sends prompt, polls up to 120s)
-node /agent/telegram.js wait-reply "How are you feeling?" 120
-
-# Get recent updates (raw)
-node /agent/telegram.js updates [offset]
-```
-
-All output is JSON. `wait-reply` returns `{"ok":true,"text":"..."}` or `{"ok":false,"reason":"timeout"}`.
-
----
-
-## Watchdog Thresholds (Live)
+Runs checks after every session and on a 5-minute timer.
 
 | Metric | Warn | Pause | Kill |
 |--------|------|-------|------|
-| Hourly spend | $0.63 | $1.27 | $2.54 |
-| Daily spend | $2.54 | $3.81 | $6.35 |
 | Sessions/hour | 4 | 6 | 8 |
-| Session tokens | 40k | — | 60k |
+| Session tokens | 40k warn | — | 60k kill |
+
+Pause resets daily at midnight. Kill requires manual `POST /resume`.
+
+```bash
+curl http://dnas:3005/status
+curl -X POST http://dnas:3005/resume
+```
 
 ---
 
-## Installed on dnas (as john)
+## OB1 Integration
 
-| Package | Version | Notes |
-|---------|---------|-------|
-| Node.js | v18.20.4 | Pre-installed |
-| npm | 9.2.0 | Installed via apt |
-| Claude Code | 2.1.86 | Installed via npm -g (also inside agent container) |
-| Bun | 1.3.11 | Installed via bun.sh/install |
-| Bun PATH | ~/.bash_profile | `export PATH="$HOME/.bun/bin:$PATH"` |
+OB1 (`ob1` container, port 8100) is the orchestration layer. It exposes a `trigger_property_agent` MCP tool that any Claude session connected to OB1 can call:
+
+```
+trigger_property_agent(type: "property-check", reason: "urgent tenant email")
+→ POST http://property-agent:3001/trigger
+→ async session launched
+```
+
+OB1's `.env` has `PROPERTY_AGENT_URL=http://property-agent:3001`.
+
+---
+
+## Capture Channels
+
+| Channel | Method | Destination |
+|---------|--------|-------------|
+| Slack | `ingest-thought` Supabase Edge Function | `thoughts` table |
+| Telegram | `telegram-capture` Supabase Edge Function | `thoughts` table |
+
+Telegram webhook: `https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/telegram-capture`
 
 ---
 
@@ -262,16 +174,11 @@ All output is JSON. `wait-reply` returns `{"ok":true,"text":"..."}` or `{"ok":fa
 
 - Python heredocs work better than bash for writing long files on this NAS
 - `docker compose` not `docker-compose`
-- Compose files named `compose.yml` not `docker-compose.yml`
-- Ports 3001/3002/3003 already allocated on dnas — use 3004+ for this stack
-- ntfy was tested and dropped (iOS APNs issue) — Pushover only for alerts
+- Compose files named `compose.yml`
+- `~/.bashrc` does not exist on dnas — use `~/.bash_profile`
 - Alto credentials pending — system prompt has placeholder
-- Rentopia manages some properties but agent treats all 59 via Alto
-- ttyd container (port 7681) was used for browser-based terminal during setup
-  — should be removed: `docker rm -f ttyd`
-- ~/.bashrc does not exist on dnas — use ~/.bash_profile instead
-- Bun install requires unzip: `sudo apt-get install -y unzip`
-- `claude --channels` does not exist — Telegram is handled via direct Bot API (telegram.js)
+- ntfy was trialled and dropped — Pushover only for alerts
+- `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
 
 ---
 
@@ -279,7 +186,4 @@ All output is JSON. `wait-reply` returns `{"ok":true,"text":"..."}` or `{"ok":fa
 
 Start a new conversation with:
 
-"Continue building the claude-nas-agent. The repo is at github.com/JohnMacrae/claude-nas-agent
-— read HANDOFF.md for full context. Watchdog and agent containers are both running.
-Gmail, GCal, Open Brain MCP connections all confirmed working. Telegram works via telegram.js.
-First live session complete. Next step is the Approval UI."
+"Continue building the property-agent. The repo is at github.com/JohnMacrae/claude-nas-agent — read HANDOFF.md for full context. OB1 is containerised locally on agent-net. property-agent is running. Telegram and Slack capture both working. trigger_property_agent wired in OB1. Next step is the Approval UI."

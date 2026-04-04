@@ -2,7 +2,7 @@ services:
 
   agent:
     build: ./agent
-    container_name: claude-agent
+    container_name: property-agent
     restart: unless-stopped
     ports:
       - "3005:3001"
@@ -13,8 +13,8 @@ services:
       - ./properties.txt:/agent/properties.txt:ro
       - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
       # Mount host Claude Code credentials so OAuth MCPs (Gmail, GCal) work
-      - /home/john/.claude:/home/agent/.claude:ro
-      - /home/john/.claude.json:/home/agent/.claude.json:ro
+      - /home/john/.claude:/home/agent/.claude:rw
+      - /home/john/.claude.json:/home/agent/.claude.json:rw
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
@@ -22,34 +22,20 @@ services:
       - OPEN_BRAIN_MCP_KEY=${OPEN_BRAIN_MCP_KEY}
       - SUPABASE_PROJECT_URL=${SUPABASE_PROJECT_URL}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
-      - FLAGS_DIR=/flags
-      - LOGS_DIR=/logs
-      - AGENT_DIR=/agent
-
-  watchdog:
-    build: ./watchdog
-    container_name: claude-watchdog
-    restart: unless-stopped
-    ports:
-      - "3004:3001"
-    volumes:
-      - ./flags:/flags
-      - ./logs:/logs
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
       - PUSHOVER_USER=${PUSHOVER_USER}
       - FLAGS_DIR=/flags
       - LOGS_DIR=/logs
-      - POLL_INTERVAL_MS=${WATCHDOG_POLL_MS:-300000}
-      - WARN_HOURLY_USD=0.63
-      - PAUSE_HOURLY_USD=1.27
-      - KILL_HOURLY_USD=2.54
-      - WARN_DAILY_USD=2.54
-      - PAUSE_DAILY_USD=3.81
-      - KILL_DAILY_USD=6.35
+      - AGENT_DIR=/agent
+      # Watchdog thresholds (merged from watchdog container)
       - WARN_SESSIONS_PER_HOUR=4
       - PAUSE_SESSIONS_PER_HOUR=6
       - KILL_SESSIONS_PER_HOUR=8
       - WARN_SESSION_TOKENS=40000
       - KILL_SESSION_TOKENS=60000
+    networks:
+      - agent-net
+
+networks:
+  agent-net:
+    external: true

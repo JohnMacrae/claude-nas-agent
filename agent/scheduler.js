@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// scheduler.js — wakes the claude-nas-agent on schedule.
+// scheduler.js — wakes the claude-nas-agent on schedule and monitors for runaway sessions.
 // Runs continuously inside the agent container.
+// Merged from separate watchdog container: session-count and token-threshold checks
+// now run in-process after each session and on a 5-minute timer.
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -13,8 +15,27 @@ const LOGS_DIR = process.env.LOGS_DIR || '/logs';
 const AGENT_DIR = process.env.AGENT_DIR || '/agent';
 const SYSTEM_PROMPT_FILE = path.join(AGENT_DIR, 'agent-system-prompt.md');
 
+// --- Watchdog thresholds (from env, same defaults as old watchdog container) ---
+const THRESHOLDS = {
+  sessionsPerHour: {
+    warn:  parseInt(process.env.WARN_SESSIONS_PER_HOUR  || '4'),
+    pause: parseInt(process.env.PAUSE_SESSIONS_PER_HOUR || '6'),
+    kill:  parseInt(process.env.KILL_SESSIONS_PER_HOUR  || '8'),
+  },
+  sessionTokens: {
+    warn: parseInt(process.env.WARN_SESSION_TOKENS || '40000'),
+    kill: parseInt(process.env.KILL_SESSION_TOKENS || '60000'),
+  },
+};
+
 let bankHolidays = new Set();
 let sessionRunning = false;
+
+// --- Logging ---
+
+function log(msg) {
+  console.log(`[scheduler ${new Date().toISOString()}] ${msg}`);
+}
 
 // --- Bank holidays ---
 
@@ -43,12 +64,8 @@ function fetchBankHolidays() {
 
 // --- Helpers ---
 
-function log(msg) {
-  console.log(`[scheduler ${new Date().toISOString()}] ${msg}`);
-}
-
 function isWorkday(now) {
-  const day = now.getDay(); // 0=Sun, 6=Sat
+  const day = now.getDay();
   if (day === 0 || day === 6) return false;
   const dateStr = now.toISOString().split('T')[0];
   return !bankHolidays.has(dateStr);
@@ -65,6 +82,133 @@ function flagExists(name) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function setFlag(name) {
+  try {
+    fs.mkdirSync(FLAGS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(FLAGS_DIR, name), new Date().toISOString());
+    log(`Flag set: ${name}`);
+  } catch (e) {
+    log(`Could not set flag ${name}: ${e.message}`);
+  }
+}
+
+function clearFlag(name) {
+  try {
+    const p = path.join(FLAGS_DIR, name);
+    if (fs.existsSync(p)) {
+      fs.unlinkSync(p);
+      log(`Flag cleared: ${name}`);
+    }
+  } catch (e) {
+    log(`Could not clear flag ${name}: ${e.message}`);
+  }
+}
+
+// --- Pushover ---
+
+function sendPushover(title, message, priority) {
+  const token = process.env.PUSHOVER_TOKEN;
+  const user  = process.env.PUSHOVER_USER;
+  if (!token || !user) {
+    log(`Pushover not configured — skipping: ${title}`);
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({ token, user, title, message, priority: priority || 0,
+      ...(priority === 2 ? { retry: 60, expire: 3600 } : {}) });
+    const req = https.request({
+      hostname: 'api.pushover.net',
+      path: '/1/messages.json',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, (res) => { res.resume(); log(`Pushover sent: ${title} (${res.statusCode})`); resolve(); });
+    req.on('error', (e) => { log(`Pushover failed: ${e.message}`); resolve(); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// --- Session log ---
+
+function readSessionLog() {
+  const sessionFile = path.join(LOGS_DIR, 'sessions.json');
+  try {
+    if (fs.existsSync(sessionFile)) return JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+  } catch (e) {
+    log(`Could not read sessions.json: ${e.message}`);
+  }
+  return [];
+}
+
+// --- Watchdog check (runs after each session + every 5 min) ---
+
+let watchdogStatus = 'OK'; // OK | WARNED | PAUSED | KILLED
+let lastDailyReset = null;
+
+async function runWatchdogCheck() {
+  // Daily reset of PAUSED flag (not KILLED — that requires manual intervention)
+  const todayStr = new Date().toISOString().split('T')[0];
+  if (lastDailyReset !== todayStr) {
+    lastDailyReset = todayStr;
+    if (flagExists('PAUSED') && !flagExists('KILLED')) {
+      clearFlag('PAUSED');
+      watchdogStatus = 'OK';
+      log('Daily reset: PAUSED flag cleared');
+    }
+  }
+
+  const sessions = readSessionLog();
+  const hourAgo = Date.now() - 3600_000;
+  const sessionsLastHour = sessions.filter(s => new Date(s.startedAt).getTime() > hourAgo).length;
+
+  // Check for large sessions in the last hour
+  const largeSession = sessions.find(
+    s => new Date(s.startedAt).getTime() > hourAgo && (s.totalTokens || 0) > THRESHOLDS.sessionTokens.warn
+  );
+  if (largeSession) {
+    const tokens = largeSession.totalTokens;
+    if (tokens > THRESHOLDS.sessionTokens.kill) {
+      if (watchdogStatus !== 'KILLED') {
+        watchdogStatus = 'KILLED';
+        setFlag('PAUSED');
+        setFlag('KILLED');
+        await sendPushover('Claude Agent Killed', `Session used ${tokens} tokens. Manual intervention required.`, 2);
+      }
+      return;
+    } else if (watchdogStatus === 'OK') {
+      watchdogStatus = 'WARNED';
+      await sendPushover('Claude Agent Warning', `Session used ${tokens} tokens (warn threshold: ${THRESHOLDS.sessionTokens.warn}).`, 1);
+    }
+  }
+
+  // Check session rate
+  if (sessionsLastHour >= THRESHOLDS.sessionsPerHour.kill) {
+    if (watchdogStatus !== 'KILLED') {
+      watchdogStatus = 'KILLED';
+      setFlag('PAUSED');
+      setFlag('KILLED');
+      await sendPushover('Claude Agent Killed', `${sessionsLastHour} sessions in last hour. Manual intervention required.`, 2);
+    }
+    return;
+  }
+  if (sessionsLastHour >= THRESHOLDS.sessionsPerHour.pause) {
+    if (watchdogStatus !== 'PAUSED' && watchdogStatus !== 'KILLED') {
+      watchdogStatus = 'PAUSED';
+      setFlag('PAUSED');
+      await sendPushover('Claude Agent Paused', `${sessionsLastHour} sessions in last hour. Will resume at midnight or via /resume.`, 1);
+    }
+    return;
+  }
+  if (sessionsLastHour >= THRESHOLDS.sessionsPerHour.warn && watchdogStatus === 'OK') {
+    watchdogStatus = 'WARNED';
+    await sendPushover('Claude Agent Warning', `${sessionsLastHour} sessions in last hour.`, 1);
+  }
+
+  if (watchdogStatus === 'WARNED' && !largeSession && sessionsLastHour < THRESHOLDS.sessionsPerHour.warn) {
+    watchdogStatus = 'OK';
   }
 }
 
@@ -117,10 +261,12 @@ async function launchSession(trigger) {
   proc.stdout.pipe(logStream);
   proc.stderr.pipe(logStream);
 
-  proc.on('close', (code) => {
+  proc.on('close', async (code) => {
     logStream.end();
     sessionRunning = false;
     log(`${trigger} session ended (exit ${code}) — log: ${logPath}`);
+    // Run watchdog check after every session
+    try { await runWatchdogCheck(); } catch (e) { log(`Watchdog check failed: ${e.message}`); }
   });
 
   proc.on('error', (e) => {
@@ -141,15 +287,13 @@ async function tick() {
   const operating = isOperatingHours(now);
 
   if (!workday || !operating) return;
-  if (hm === lastTick.hm) return; // already fired this minute
+  if (hm === lastTick.hm) return;
   lastTick.hm = hm;
 
-  // Fixed daily sessions
   if (hm === 600)  { await launchSession('morning'); return; }
   if (hm === 1200) { await launchSession('checkin'); return; }
   if (hm === 1800) { await launchSession('evening'); return; }
 
-  // Property check every 2 hours, 08:00–18:00, on the hour
   const h = now.getHours();
   if (now.getMinutes() === 0 && h >= 8 && h < 18 && h % 2 === 0) {
     if (h !== lastTick.propertyCheckHour) {
@@ -170,24 +314,31 @@ function startHttpServer() {
 
     // GET /status
     if (req.method === 'GET' && url.pathname === '/status') {
+      const sessions = readSessionLog();
+      const hourAgo = Date.now() - 3600_000;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         sessionRunning,
+        watchdogStatus,
         paused: flagExists('PAUSED'),
         killed: flagExists('KILLED'),
+        sessionsLastHour: sessions.filter(s => new Date(s.startedAt).getTime() > hourAgo).length,
+        recentSessions: sessions.slice(-5),
         time: new Date().toISOString(),
       }));
       return;
     }
 
-    // POST /trigger  body: {"type":"morning"} or ?type=morning
+    // POST /trigger  body: {"type":"morning"}
     if (req.method === 'POST' && url.pathname === '/trigger') {
       let body = '';
       req.on('data', chunk => (body += chunk));
       req.on('end', async () => {
-        let triggerType;
+        let triggerType, reason;
         try {
-          triggerType = JSON.parse(body).type;
+          const parsed = JSON.parse(body);
+          triggerType = parsed.type;
+          reason = parsed.reason;
         } catch {
           triggerType = url.searchParams.get('type');
         }
@@ -205,11 +356,22 @@ function startHttpServer() {
         }
 
         res.writeHead(202, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, trigger: triggerType }));
+        res.end(JSON.stringify({ ok: true, trigger: triggerType, reason: reason || null }));
 
-        // Launch after response is sent
+        if (reason) log(`External trigger: ${triggerType} — ${reason}`);
         launchSession(triggerType);
       });
+      return;
+    }
+
+    // POST /resume — clear PAUSED and KILLED flags
+    if (req.method === 'POST' && url.pathname === '/resume') {
+      clearFlag('PAUSED');
+      clearFlag('KILLED');
+      watchdogStatus = 'OK';
+      log('Agent manually resumed via /resume');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Agent resumed' }));
       return;
     }
 
@@ -228,7 +390,6 @@ async function main() {
   log('Starting');
 
   await fetchBankHolidays();
-  // Refresh holidays daily at midnight
   setInterval(fetchBankHolidays, 24 * 60 * 60 * 1000);
 
   startHttpServer();
@@ -236,8 +397,13 @@ async function main() {
   // Tick every minute
   setInterval(tick, 60_000);
 
-  // Fire immediately in case we started mid-window
+  // Watchdog check every 5 minutes (independent of sessions)
+  setInterval(async () => {
+    try { await runWatchdogCheck(); } catch (e) { log(`Watchdog check failed: ${e.message}`); }
+  }, 5 * 60_000);
+
   await tick();
+  await runWatchdogCheck();
 
   log('Scheduler running');
 }
