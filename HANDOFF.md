@@ -245,6 +245,7 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 - Alto credentials pending — system prompt has placeholder
 - ntfy was trialled and dropped — Pushover only for alerts
 - `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
+- **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `docker compose restart agent`
 
 ---
 
