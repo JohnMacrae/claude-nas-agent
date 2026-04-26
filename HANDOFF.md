@@ -51,7 +51,7 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 | Tailscale IP | `100.98.167.107` |
 | NAS user | `john` |
 | Docker root | `/volume1/docker/` |
-| Stack root | `/volume1/docker/claude-agent/` |
+| Stack root | `/volume1/docker/property-agent/` |
 | OB1 root | `/volume1/docker/OB1/` |
 | Docker network | `agent-net` (external, shared) |
 | Repo | `git@github.com:JohnMacrae/claude-nas-agent.git` |
@@ -78,7 +78,7 @@ Start both:
 ```bash
 docker network create agent-net   # only needed once
 cd /volume1/docker/OB1 && docker compose up -d
-cd /volume1/docker/claude-agent && docker compose up -d
+cd /volume1/docker/property-agent && docker compose up -d
 ```
 
 ---
@@ -120,6 +120,12 @@ OPEN_BRAIN_MCP_KEY=68d1a7500ae7f9b729b99a6eff48f99a7214eaf8c05eb9cef00ca8ed1c5bf
 # Supabase (for Life Engine tables)
 SUPABASE_PROJECT_URL=https://tvoyukxvvgdambudjdbq.supabase.co
 SUPABASE_SERVICE_KEY=
+
+# FreeAgent
+FREEAGENT_CLIENT_ID=
+FREEAGENT_CLIENT_SECRET=
+FREEAGENT_REFRESH_TOKEN=
+FREEAGENT_CONTACT_URL=      # Fallback contact for events with no property shortcode
 
 # Alto (pending)
 ALTO_DATAFEED_ID=
@@ -245,7 +251,8 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 - Alto credentials pending — system prompt has placeholder
 - ntfy was trialled and dropped — Pushover only for alerts
 - `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
-- **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `docker compose restart agent`
+- **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `cd /volume1/docker/property-agent && docker compose restart agent`
+- **Test invoices in FreeAgent**: 7 draft test invoices (IDs 89452128, 89452224, 89452370, 89452423, 89452494, 89452633, 89452696) were created during invoicing debugging on 26 Apr 2026 — delete them manually in FreeAgent
 
 ---
 
@@ -253,4 +260,4 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 
 Start a new conversation with:
 
-"Continue building the property-agent. The repo is at github.com/JohnMacrae/claude-nas-agent — read HANDOFF.md for full context. OB1 is containerised locally on agent-net. property-agent is running. Telegram and Slack capture both working. trigger_property_agent wired in OB1. Next step is the Approval UI."
+"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is now working — per-property contacts, correct rates from rates.json, auto invoice numbering. 7 test draft invoices need deleting in FreeAgent (see Known Issues). Next priorities: clean up test invoices, then Approval UI or Alto integration."
