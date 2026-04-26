@@ -34,6 +34,12 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 - First live session completed — Gmail, GCal, Open Brain all confirmed
 - **FreeAgent invoicing** — `agent/freeagent.js` wired into morning session (see below)
 - **Scheduler fix** — morning/checkin/evening sessions now fire outside the property-check operating window (were being suppressed by the `isOperatingHours` guard)
+- **freeagent.js — hrs/h support** — `parseLineItem` regex extended to recognise `hr`, `hrs`, and `h` as time unit abbreviations in addition to `hour`/`hours` (e.g. `2 hrs`, `1h`)
+- **Property Calendar audit (Apr 2025–Apr 2026)** — full audit of 196 events; 31 events updated:
+  - 7 events: time expressions moved to own line (were embedded at end of task line, e.g. `Replace waste 1.5 hours` → two lines)
+  - 22 events: hours added to descriptions + summaries reformatted to `ACRONYM - description` pattern
+  - 6 events: descriptions cleared (access/survey notes with no billable labour)
+  - Multi-property event (`CO Alarms 10JS, 79AW, 6EB`) and `Valuations` event left as-is; single invoice against default contact — split manually if needed
 
 ### 🔲 Next
 - Approval UI (simple web page for approving write actions)
@@ -207,9 +213,17 @@ Each property gets its own FreeAgent contact (named by shortcode, e.g. `122EW`) 
 | `Sink unblocked` | Comment (no price) |
 | `Callout £60` | Hours, qty 1, £60 |
 | `2 hours plumbing` | Hours, qty 2, £70 + £30 (rates split) |
+| `2 hrs plumbing` | Hours, qty 2, £70 + £30 (`hrs`, `hr`, `h` all recognised) |
+| `1h labour` | Hours, qty 1, £70 |
 | `2 hours plumbing £80` | Hours, qty 2, £70 + £30 (explicit price ignored for multi-hour split) |
 | `1 day scaffolding` | Days, qty 1, £0 (add cost when contractor invoices) |
 | `£150 materials` | Hours, qty 1, £150 |
+
+**Time must be on its own line and at the start of the line.** `parseLineItem` matches `^[\d.]+ (hours|hour|hrs|hr|h)` — hours embedded mid-line (e.g. `Replace waste 1.5 hours`) will not be parsed. Correct format:
+```
+Replace waste
+1.5 hours
+```
 
 ### Rates (`rates.json`)
 
@@ -260,4 +274,4 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 
 Start a new conversation with:
 
-"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is now working — per-property contacts, correct rates from rates.json, auto invoice numbering. 7 test draft invoices need deleting in FreeAgent (see Known Issues). Next priorities: clean up test invoices, then Approval UI or Alto integration."
+"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026 — all events have correct ACRONYM - description summaries and time on own lines. 7 test draft invoices still need deleting in FreeAgent (see Known Issues). Next priorities: delete test invoices, then generate the backlog of Apr 2025–Apr 2026 invoices, then Approval UI or Alto integration."

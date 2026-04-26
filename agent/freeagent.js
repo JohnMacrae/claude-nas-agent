@@ -107,8 +107,8 @@ function parseLineItem(raw) {
     text = text.replace(priceMatch[0], '').trim();
   }
 
-  // Hours: "1 hour labour", "2.5 hours plumbing"
-  const hourMatch = text.match(/^([\d.]+)\s*hours?\b/i);
+  // Hours: "1 hour labour", "2.5 hours plumbing", "2 hrs", "1.5 hr", "2h"
+  const hourMatch = text.match(/^([\d.]+)\s*(?:hours?|hrs?|h)\b/i);
   if (hourMatch) {
     const hours = parseFloat(hourMatch[1]);
     const label = text.slice(hourMatch[0].length).replace(/^[\s\-–,]+/, '') || 'Labour';
