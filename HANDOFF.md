@@ -1,6 +1,6 @@
 # HANDOFF.md — Property Agent
 
-Last updated: 2026-04-04
+Last updated: 2026-04-26
 
 ---
 
@@ -32,6 +32,8 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
   - End-to-end tested — messages captured to `thoughts` table ✓
 - Slack capture working (pre-existing Edge Function `ingest-thought`) ✓
 - First live session completed — Gmail, GCal, Open Brain all confirmed
+- **FreeAgent invoicing** — `agent/freeagent.js` wired into morning session (see below)
+- **Scheduler fix** — morning/checkin/evening sessions now fire outside the property-check operating window (were being suppressed by the `isOperatingHours` guard)
 
 ### 🔲 Next
 - Approval UI (simple web page for approving write actions)
@@ -167,6 +169,70 @@ OB1's `.env` has `PROPERTY_AGENT_URL=http://property-agent:3001`.
 | Telegram | `telegram-capture` Supabase Edge Function | `thoughts` table |
 
 Telegram webhook: `https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/telegram-capture`
+
+---
+
+## FreeAgent Invoicing
+
+The agent creates draft invoices in FreeAgent automatically each morning from the previous day's Property Calendar events.
+
+### How it works
+
+1. Morning session calls `list_events` on the Property Calendar for yesterday.
+2. Events matching `ACRONYM - description` with a non-empty `event.description` are invoiced.
+3. Events matching `ACRONYM - inv` (inventory checks) are skipped.
+4. The agent calls:
+   ```
+   node /agent/freeagent.js create-invoice \
+     --description "<event.summary>" \
+     --address "<full property address>" \
+     --notes "<event.description>" \
+     --dated-on "<YYYY-MM-DD>"
+   ```
+
+### Per-property contacts
+
+Each property gets its own FreeAgent contact (named by shortcode, e.g. `122EW`) with the property address populated from `JJP_Property_List.md`. The contact is created automatically on first invoice if it doesn't exist. This means the invoice Bill To section shows the correct property address rather than a generic contact.
+
+### Line item parsing (`event.description` format)
+
+| Description line | Result |
+|-----------------|--------|
+| `Sink unblocked` | Comment (no price) |
+| `Callout £60` | Hours, qty 1, £60 |
+| `2 hours plumbing` | Hours, qty 2, £70 + £30 (rates split) |
+| `2 hours plumbing £80` | Hours, qty 2, £70 + £30 (explicit price ignored for multi-hour split) |
+| `1 day scaffolding` | Days, qty 1, £0 (add cost when contractor invoices) |
+| `£150 materials` | Hours, qty 1, £150 |
+
+### Rates (`rates.json`)
+
+```json
+{
+  "labour": {
+    "first_hour_gbp": 70.00,
+    "subsequent_hours_gbp": 30.00
+  },
+  "default": {
+    "quantity": 1
+  }
+}
+```
+
+`rates.json` is volume-mounted — edit on disk, no rebuild needed.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `FREEAGENT_CLIENT_ID` | OAuth client ID |
+| `FREEAGENT_CLIENT_SECRET` | OAuth client secret |
+| `FREEAGENT_REFRESH_TOKEN` | Long-lived refresh token |
+| `FREEAGENT_CONTACT_URL` | Fallback contact URL (used when no property shortcode found) |
+
+### Already-processed guard
+
+The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before invoicing. Re-running the morning session will not duplicate invoices.
 
 ---
 

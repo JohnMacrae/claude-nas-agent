@@ -11,10 +11,14 @@ services:
       - ./logs:/logs
       - ./output:/output
       - ./properties.txt:/agent/properties.txt:ro
+      - ./property-aliases.json:/agent/property-aliases.json:ro
+      - ./rates.json:/agent/rates.json:ro
+      - /volume1/docker/property_details/JJP_Property_List.md:/agent/JJP_Property_List.md:ro
       - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
       # Mount host Claude Code credentials so OAuth MCPs (Gmail, GCal) work
       - /home/john/.claude:/home/agent/.claude:rw
       - /home/john/.claude.json:/home/agent/.claude.json:rw
+      - /volume1/docker/property-agent/.claude:/agent/.claude:ro
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
@@ -24,6 +28,10 @@ services:
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
       - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
       - PUSHOVER_USER=${PUSHOVER_USER}
+      - FREEAGENT_CLIENT_ID=${FREEAGENT_CLIENT_ID}
+      - FREEAGENT_CLIENT_SECRET=${FREEAGENT_CLIENT_SECRET}
+      - FREEAGENT_REFRESH_TOKEN=${FREEAGENT_REFRESH_TOKEN}
+      - FREEAGENT_CONTACT_URL=${FREEAGENT_CONTACT_URL}
       - FLAGS_DIR=/flags
       - LOGS_DIR=/logs
       - AGENT_DIR=/agent

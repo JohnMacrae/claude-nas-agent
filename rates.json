@@ -1,0 +1,9 @@
+{
+  "labour": {
+    "first_hour_gbp": 70.00,
+    "subsequent_hours_gbp": 30.00
+  },
+  "default": {
+    "quantity": 1
+  }
+}

@@ -289,15 +289,18 @@ async function tick() {
   const now = new Date();
   const hm = now.getHours() * 100 + now.getMinutes();
   const workday = isWorkday(now);
-  const operating = isOperatingHours(now);
 
-  if (!workday || !operating) return;
+  if (!workday) return;
   if (hm === lastTick.hm) return;
   lastTick.hm = hm;
 
+  // Named sessions fire regardless of the property-check operating window
   if (hm === 600)  { await launchSession('morning'); return; }
   if (hm === 1200) { await launchSession('checkin'); return; }
   if (hm === 1800) { await launchSession('evening'); return; }
+
+  const operating = isOperatingHours(now);
+  if (!operating) return;
 
   const h = now.getHours();
   if (now.getMinutes() === 0 && h >= 8 && h < 18 && h % 2 === 0) {

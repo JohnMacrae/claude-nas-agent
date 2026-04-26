@@ -1,0 +1,9 @@
+{
+  "street_aliases": {
+    "grantchester": "Bignell Croft",
+    "grantchester court": "Bignell Croft",
+    "grantchester": "Bignell Croft",
+    "grantchester court": "Bignell Croft"
+  },
+  "notes": "Shortcodes for all 60 properties are in /agent/JJP_Property_List.md. This file only holds street-name aliases (alternative names for the same street/development)."
+}
