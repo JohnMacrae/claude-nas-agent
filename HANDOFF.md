@@ -1,6 +1,6 @@
 # HANDOFF.md — Property Agent
 
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 
 ---
 
@@ -267,6 +267,23 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 - `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
 - **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `cd /volume1/docker/property-agent && docker compose restart agent`
 - **Test invoices in FreeAgent**: 7 draft test invoices (IDs 89452128, 89452224, 89452370, 89452423, 89452494, 89452633, 89452696) were created during invoicing debugging on 26 Apr 2026 — delete them manually in FreeAgent
+- **MCP OAuth token expiry**: tokens expire around 23 days (shorter than initially assumed). Warning threshold set to 18 days, pause at 23 days. Re-auth: `docker exec -it property-agent claude` then type "authenticate the gmail mcp connection". Update `/flags/mcp-auth-date` with today's date after re-auth.
+- **OB1 `capture_thought` schema error**: if sessions report `upsert_thought function not found in schema cache`, run `NOTIFY pgrst, 'reload schema';` in the Supabase SQL editor to reload PostgREST's schema cache.
+- **Schrodinger's maintenance tasks**: the session log claiming a task was "closed" does not guarantee `log_maintenance` actually succeeded. Authoritative source of open tasks is `get_upcoming_maintenance` (tasks with `next_due IS NOT NULL`), not OB thoughts. Fixed in system prompt (Apr 2026).
+
+---
+
+## Telegram Shorthand
+
+John can send these directly in Telegram:
+
+| Format | What happens |
+|--------|-------------|
+| `59BC complete` or `59BC done` | Closes all open maintenance tasks for 59BC |
+| `59BC-1.5hr` | Finds the most recent uninvoiced GCal event for 59BC, updates description to `Completed — DD Mon YYYY\n1.5 hours`, ready for next morning invoice run |
+| `59BC 2h` | Same as above with 2 hours |
+
+Property references accept shortcodes (e.g. `59BC`) or full address (number + street name). Unrecognised references get a ⚠️ error reply.
 
 ---
 
@@ -274,4 +291,4 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 
 Start a new conversation with:
 
-"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026 — all events have correct ACRONYM - description summaries and time on own lines. 7 test draft invoices still need deleting in FreeAgent (see Known Issues). Next priorities: delete test invoices, then generate the backlog of Apr 2025–Apr 2026 invoices, then Approval UI or Alto integration."
+"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026. 7 test draft invoices still need deleting in FreeAgent (see Known Issues). Next priorities: delete test invoices, then generate the backlog of Apr 2025–Apr 2026 invoices, then Approval UI or Alto integration."

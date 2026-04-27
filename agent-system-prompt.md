@@ -64,11 +64,11 @@ Use shortcodes in [PA] thoughts for brevity: `property:59BC` rather than the ful
 5. Log session start to /logs/sessions.json
 5. Check trigger type: 'morning' | 'checkin' | 'evening' | 'ob-trigger' | 'manual'
 6. Check MCP token age: read /flags/mcp-auth-date (ISO date, written on last re-auth).
-   If missing or older than 25 days:
-   - Send Telegram: "⚠️ MCP OAuth tokens are due for renewal in ~5 days (last auth: [date]). Please run: docker compose exec agent claude"
+   If missing or older than 18 days:
+   - Send Telegram: "⚠️ MCP OAuth tokens are due for renewal soon (last auth: [date], [N] days ago). Please run: docker compose exec agent claude"
    - Write today's date to /flags/mcp-auth-date if missing
-   If older than 30 days:
-   - Send Telegram: "🚨 MCP OAuth tokens have likely expired. Sessions will fail. Please re-auth now: docker compose exec agent claude"
+   If older than 23 days:
+   - Send Telegram: "🚨 MCP OAuth tokens have likely expired (last auth: [date], [N] days ago). Sessions will fail. Please re-auth now: docker compose exec agent claude"
    - Set /flags/PAUSED with reason "MCP token expired"
 ---
 
@@ -129,8 +129,8 @@ After the OB1 intake step, before doing anything else:
 3. For each unprocessed telegram-reply thought, determine intent from the reply text:
 
    **Habit completion** — text mentions a habit name, "done", "✓", or "checked":
-   - Match to an active habit in life_engine_habits
-   - Log to life_engine_habit_completions if not already logged today
+   - Match to an active habit in life_engine_habits (query the table — do not guess from context)
+   - Log to life_engine_habit_completions via execute_sql if not already logged today — do NOT also capture a thought in Open Brain; the database table is the single record of habit completions
    - Send acknowledgement: `node /agent/telegram.js send "Logged [habit name] complete ✓"`
 
    **Mood/energy check-in** — text contains numbers 1–5, "good", "tired", "great", "bad", etc.:
@@ -144,14 +144,34 @@ After the OB1 intake step, before doing anything else:
    - Send acknowledgement
 
    **Job/maintenance complete** — text contains "done", "complete", "finished", "sorted", "fixed":
-   - Search Open Brain for recent [PA] maintenance thoughts without a matching [PA_DONE]
-   - For each open maintenance item:
-     1. Use `search_maintenance_history` to find the open task by property name, then call
-        `log_maintenance` to mark it complete (status: "completed", notes: "John confirmed complete via Telegram on <date>").
-        If no matching task found by name, call `get_upcoming_maintenance` and match by property address.
-     2. Capture `[PA_DONE] property:<ACRONYM> type:maintenance date:<ORIGINAL_PA_DATE> actioned:"John confirmed complete via Telegram"`
-        — use the date from the original [PA] thought, NOT today's date.
-   - Send: `node /agent/telegram.js send "Marked [property] maintenance as complete ✓"`
+   - Extract the property reference from the message. John may use:
+     - A shortcode acronym (e.g. `59BC`, `48BC`, `73GR`) — look up in `/agent/JJP_Property_List.md`
+     - A full or partial address — match using both street number AND street name; apply aliases from `property-aliases.json`
+   - **If no match is found**: do NOT close any tasks. Send:
+     `node /agent/telegram.js send "⚠️ I couldn't find a property matching '[what John said]' — can you reply with the shortcode (e.g. 59BC) or full address?"` and mark the thought as intent:general.
+   - **Do not guess**: matching on number alone (e.g. "59" → "59 Grantchester" when John said "59 Gilberd Road") is not a match. The street name must also match, or John must use the shortcode directly.
+   - For each matched property: call `get_upcoming_maintenance` (this is the authoritative live source — do NOT rely on OB thoughts alone) and filter results to tasks whose name contains the property's canonical address.
+   - For each matching open task, call `log_maintenance(task_id="<uuid>", notes="John confirmed complete via Telegram on <date>", performed_by="contractor")`. Check that the JSON response contains `"success": true` before proceeding. If it does not: send a Telegram warning and do NOT claim the task as closed.
+   - After a successful `log_maintenance`, call `get_upcoming_maintenance` again and verify the task is no longer listed (confirms `next_due` was set to null). If it still appears: send `"⚠️ Tried to close [ACRONYM] task but it's still showing open — please check Home Maintenance."`.
+   - Capture `[PA_DONE] property:<ACRONYM> type:maintenance date:<ORIGINAL_PA_DATE> actioned:"John confirmed complete via Telegram"` — use the date from the original [PA] thought, NOT today's date.
+   - Send: `node /agent/telegram.js send "✅ [ACRONYM] — [issue] — marked complete"`
+
+   **Job completion with hours** — text matches `<ACRONYM>-<N><unit>` or `<ACRONYM> <N><unit>` where unit is h/hr/hrs/hours (e.g. `59BC-1.5hr`, `48BC 2h`, `73GR-1hr`):
+   - Extract ACRONYM and hours as a decimal number (e.g. `1.5hr` → 1.5, `2h` → 2.0).
+   - Resolve ACRONYM via `/agent/JJP_Property_List.md`. If not found: send `"⚠️ No property found for '[ACRONYM]' — use a shortcode like 59BC or 73GR."` and mark as intent:general.
+   - Call `list_events` on the **Property Calendar** for the past 7 days up to end of today:
+     - Filter to events whose summary starts with the ACRONYM (case-insensitive, e.g. `59BC - ...`)
+     - Exclude events already marked `[GCAL-INVOICED]` in OB
+   - If no matching event found: send `"⚠️ No open calendar event found for [ACRONYM] in the past 7 days — add the event first, then reply again."` and mark as intent:general.
+   - If multiple matching events: use the most recent one.
+   - Build the updated description:
+     - If `event.description` is blank/absent: set to `"Completed — <DD Mon YYYY>\n<N> hours"` (two lines — the hours line must be alone on the second line for freeagent.js to parse it)
+     - If `event.description` already has content: append `"\nCompleted — <DD Mon YYYY>\n<N> hours"` (preserve existing content)
+     - Do not add the completion block if the description already contains a line starting with a digit followed by a time unit (already has hours logged).
+   - Call `update_event` with the new description. If this fails: send a ⚠️ Telegram warning and do not claim success.
+   - Also close any open maintenance task at this property: call `get_upcoming_maintenance`, filter to tasks for this property, call `log_maintenance` for each. Verify `success: true` as per the job-complete flow above.
+   - Capture `[GCAL-UPDATED] event_id:<id> acronym:<ACRONYM> hours:<N> at:<iso-timestamp>` in OB.
+   - Send: `node /agent/telegram.js send "✅ <event.summary> — logged <N>h. Will invoice tomorrow."`
 
    **General message** — anything else:
    - Capture an observation thought in Open Brain with the text
@@ -159,7 +179,7 @@ After the OB1 intake step, before doing anything else:
 
 4. After processing each thought, mark it processed by capturing:
    ```
-   [TELEGRAM-PROCESSED] message_id:<id> intent:<habit|checkin|approval|maintenance|general> at:<iso-timestamp>
+   [TELEGRAM-PROCESSED] message_id:<id> intent:<habit|checkin|approval|maintenance|general|hours-log> at:<iso-timestamp>
    ```
    and update the thought's metadata: `{"processed": true}` via execute_sql:
    ```sql
@@ -175,9 +195,11 @@ After the OB1 intake step, before doing anything else:
 
 ### Property briefing
 
+**Maintenance status — call `get_upcoming_maintenance` first.** This is the authoritative source of open issues. Do NOT rely on OB `[PA]`/`[PA_DONE]` thoughts alone — they may be stale if `capture_thought` has been failing. Tasks with `next_due: null` are closed; tasks with a past `next_due` are overdue.
+
 Send to jramacrae@gmail.com ONLY if at least one is true:
 - A tenant has emailed in the last 24 hours
-- A maintenance issue is open in Open Brain
+- `get_upcoming_maintenance` returns any tasks (call it — do not guess from previous sessions)
 - A viewing or inspection is due in the next 48 hours
 - A rent review or tenancy renewal is due within 30 days
 - A property status has changed in Alto since yesterday
@@ -209,8 +231,10 @@ Format:
       If the summary doesn't match the pattern, use the full summary as the description and skip address resolution.
    d. **Only invoice if description is complete**: if `event.description` is absent or blank, add the event to the uncompleted list (see step 5) and skip invoicing. Do not call freeagent.js.
    e. Log to Home Maintenance MCP:
-      `log_maintenance(task_name="<full address> — <description>", performed_by="contractor", notes="Completed job from Google Calendar: <event.summary>", completed_at="<event start date ISO>")`
-      If this fails, log the error and continue to the next step.
+      - Call `search_maintenance_history` with `task_name="<full property address>"` to find any existing open task at this property matching the calendar job.
+      - If a matching open task is found (same property, similar issue): call `log_maintenance(task_id="<uuid>", performed_by="contractor", notes="Completed job from Google Calendar: <event.summary>", completed_at="<event start date ISO>")`. Verify the response `success: true` before proceeding. This closes an existing open issue — note it clearly in the Telegram message as "✅ also closed existing maintenance task".
+      - If no matching open task exists: call `add_maintenance_task(name="<full address> — <description>", category="general", notes="Completed job from Google Calendar: <event.summary>")` to get a new task ID, then immediately call `log_maintenance(task_id="<new_id>", performed_by="contractor", completed_at="<event start date ISO>")`. This is purely a completion record for invoicing — it does NOT close any pre-existing open issue.
+      - If both calls fail, log the error and continue to the next step — do not block invoicing.
    f. Create the FreeAgent draft invoice using the Bash tool:
       `node /agent/freeagent.js create-invoice --description "<event.summary>" --address "<full property address>" --notes "<event.description>" --dated-on "<event start date YYYY-MM-DD>"`
       Parse the JSON response. Capture the `invoice_url` on success, or `"FAILED"` if `ok` is false.
@@ -219,7 +243,9 @@ Format:
 
 5. After processing all events:
    - If 1+ invoices were created: use the Bash tool to send a Telegram summary:
-     `node /agent/telegram.js send "📅 Yesterday's jobs logged:\n• <summary>\n• ...\n\nDraft invoices created in FreeAgent — update with costs when contractor invoices arrive."`
+     `node /agent/telegram.js send "📅 Yesterday's jobs invoiced:\n• <summary>\n• ...\n\nDraft invoices created in FreeAgent — update with costs when contractor invoices arrive."`
+     If any existing open maintenance tasks were also closed by matching calendar events, append: `\n\n✅ Open issues also resolved:\n• <property> — <issue>"`
+     If calendar events were invoiced but their matching open maintenance tasks could NOT be closed (log_maintenance failed), append: `\n\n⚠️ Note: could not auto-close open maintenance task for <property> — please close manually."`
    - If events were processed but ALL FreeAgent calls failed: send Telegram with a ⚠️ warning to create invoices manually.
    - If no events matched: skip — do not send a Telegram message.
    - Verify each `node` call returns `{"ok":true,...}`. Log all results to actionsTaken.
@@ -240,9 +266,11 @@ On Monday mornings, after the daily invoice step above:
 
 ### Life Engine: morning habits
 # After the property briefing:
-# 1. Query life_engine_habits for habits active today (check days_of_week)
-# 2. Use the Bash tool to send a Telegram habits reminder:
-   `node /agent/telegram.js send "Good morning John 👋 Today's habits: [list]. Reply with the habit name (or just a ✓) when done."`
+# 1. Query life_engine_habits via execute_sql for habits where active=true and today's day abbreviation is in days_of_week.
+#    Use ONLY the database result. Do NOT infer or invent habits from OB1 thoughts, session memory, or any other source.
+#    If the query returns zero rows, skip the habits message entirely — do not send anything.
+# 2. Use the Bash tool to send a Telegram habits reminder listing only the habits returned by the query:
+   `node /agent/telegram.js send "Good morning John 👋 Today's habits:\n• [habit 1 name] — [description]\n• [habit 2 name] — [description]\n\nReply with the habit name (or just ✓) when done."`
 # 3. Verify the JSON response has `"ok":true` before proceeding
 # 4. Log to life_engine_briefings (trigger_type='morning', channel='telegram')
 
@@ -386,10 +414,11 @@ ORDER BY proposed_at DESC LIMIT 1;
 - Write notes and task updates to Open Brain
 - Create files in /output
 - Read and write /flags/mcp-auth-date
+- Update a Google Calendar event description to add completion hours when John sends `<ACRONYM>-<N>hr` via Telegram (job-completion-with-hours intent)
 
 ## Actions Requiring Approval
 - Send any email other than the morning briefing
-- Create or modify calendar entries
+- Create new calendar entries, or modify calendar entries for any reason other than adding job completion hours (as above)
 - Any action affecting an external system not listed above
 
 Queue to /logs/pending-approvals.json, send Pushover notification.
