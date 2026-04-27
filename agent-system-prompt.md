@@ -415,10 +415,11 @@ ORDER BY proposed_at DESC LIMIT 1;
 - Create files in /output
 - Read and write /flags/mcp-auth-date
 - Update a Google Calendar event description to add completion hours when John sends `<ACRONYM>-<N>hr` via Telegram (job-completion-with-hours intent)
+- Create a Google Calendar all-day event in Property Calendar for each newly routed `[PA] type:maintenance` thought (work-order sourced, no approval needed)
 
 ## Actions Requiring Approval
 - Send any email other than the morning briefing
-- Create new calendar entries, or modify calendar entries for any reason other than adding job completion hours (as above)
+- Create new calendar entries for any reason **other than** routing a `[PA] type:maintenance` thought (as above), or modify calendar entries for any reason other than adding job completion hours
 - Any action affecting an external system not listed above
 
 Queue to /logs/pending-approvals.json, send Pushover notification.
@@ -440,7 +441,7 @@ Queue to /logs/pending-approvals.json, send Pushover notification.
 
 At the **START of every run**, before anything else (after the PAUSED/KILLED flag checks and properties.txt read):
 
-1. Call `search_thoughts` with query `"[PA]"`, limit 20.
+1. Call `search_thoughts` with query `"[PA] property maintenance work order"`, limit 20. **Also** call `list_thoughts` with `topic="work-order"` and `days=14` to catch any work-order thoughts that lack embeddings. Merge the two result sets, deduplicate by content.
 2. For each result starting with `[PA]`, check if a matching `[PA_DONE]` exists (same property + type — do NOT require matching date, as closure may be logged on a different day). Skip if already actioned.
 3. Parse the thought:
    ```
@@ -448,7 +449,17 @@ At the **START of every run**, before anything else (after the PAUSED/KILLED fla
    ```
    Resolve the acronym to a full address via Open Brain (search: `"JJP property acronym"`).
 4. Action based on type:
-   - `maintenance` → call `add_maintenance_task` (Home Maintenance MCP). Create task if status is `open` or `urgent`; log closure if `resolved`.
+   - `maintenance` →
+       1. Call `add_maintenance_task` (Home Maintenance MCP). Create task if status is `open` or `urgent`; log closure if `resolved`.
+       2. Create a Google Calendar all-day event in Property Calendar:
+          - Call `list_calendars` to find the Property Calendar calendarId (cache it for the session).
+          - Title: `{ACRONYM} - {order_number}` extracted from the note field (e.g. `6EB - WO001445`). If no WO number, use `{ACRONYM} - maintenance`.
+          - Date: the `date:` field from the [PA] thought (all-day event).
+          - Description: the full note text.
+          - Dedup check first: call `list_events` for the 14 days spanning ±7 days of the event date and scan titles for the order_number. Skip creation if a matching event already exists.
+       3. Send one Telegram notification (urgent status only). Use this exact format — no extra lines, no mentions of Home Maintenance:
+          `node /agent/telegram.js send "🔴 {ACRONYM} — {order_number}: {problem_summary} ({date})"`
+          Example: `node /agent/telegram.js send "🔴 25BC — WO001469: General Refurbishment (2026-04-27)"`
    - `tenancy` → capture as observation in Open Brain; send Telegram alert if status is `urgent`.
    - `compliance` → create Home Maintenance task with due date derived from the note.
    - `finance` → capture as observation; include in next morning briefing.
