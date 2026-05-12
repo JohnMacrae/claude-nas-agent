@@ -34,6 +34,7 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 - First live session completed — Gmail, GCal, Open Brain all confirmed
 - **FreeAgent invoicing** — `agent/freeagent.js` wired into morning session (see below)
 - **Scheduler fix** — morning/checkin/evening sessions now fire outside the property-check operating window (were being suppressed by the `isOperatingHours` guard)
+- **DST/timezone fix (Apr 2026)** — added `TZ=Europe/London` to `compose.yml`; without this the container ran UTC and all sessions fired 1 hour late during BST
 - **freeagent.js — hrs/h support** — `parseLineItem` regex extended to recognise `hr`, `hrs`, and `h` as time unit abbreviations in addition to `hour`/`hours` (e.g. `2 hrs`, `1h`)
 - **Property Calendar audit (Apr 2025–Apr 2026)** — full audit of 196 events; 31 events updated:
   - 7 events: time expressions moved to own line (were embedded at end of task line, e.g. `Replace waste 1.5 hours` → two lines)
@@ -138,6 +139,45 @@ ALTO_DATAFEED_ID=
 ALTO_USERNAME=
 ALTO_PASSWORD=
 ```
+
+---
+
+## Scheduler Internals
+
+`scheduler.js` runs continuously inside the container. It drives all timed sessions via a `tick()` function called every minute.
+
+### How a session fires
+
+```
+setInterval(tick, 60_000)
+  └── tick()
+        ├── now = new Date()           // local time — correct because TZ=Europe/London
+        ├── hm  = hours*100 + minutes  // e.g. 1200 for noon BST
+        ├── isWorkday(now)             // Mon–Fri, not a UK bank holiday
+        └── compare hm against fixed values:
+              600  → launchSession('morning')
+              1200 → launchSession('checkin')
+              1800 → launchSession('evening')
+              even hours 08:00–18:00 → launchSession('property-check')
+```
+
+Named sessions (morning/checkin/evening) fire regardless of the operating-hours window. `property-check` only fires inside `isOperatingHours` (06:00–18:00 local).
+
+Bank holidays are fetched from `https://www.gov.uk/bank-holidays.json` at startup and refreshed every 24 hours.
+
+### TZ requirement
+
+`TZ=Europe/London` **must** be set in `compose.yml`. Without it `new Date().getHours()` returns UTC inside the container, causing all sessions to fire 1 hour late during BST. Setting TZ also handles the GMT→BST and BST→GMT transitions automatically — no cron adjustments needed at clock-change dates.
+
+### HTTP control API
+
+```
+GET  http://dnas:3005/status          → JSON: running, watchdog state, recent sessions
+POST http://dnas:3005/trigger         → body: {"type":"morning|checkin|evening|property-check|manual","reason":"..."}
+POST http://dnas:3005/resume          → clears PAUSED + KILLED flags
+```
+
+OB1 triggers sessions via its `trigger_property_agent` MCP tool → `POST http://property-agent:3001/trigger`.
 
 ---
 
@@ -266,7 +306,6 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 - ntfy was trialled and dropped — Pushover only for alerts
 - `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
 - **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `cd /volume1/docker/property-agent && docker compose restart agent`
-- **Test invoices in FreeAgent**: 7 draft test invoices (IDs 89452128, 89452224, 89452370, 89452423, 89452494, 89452633, 89452696) were created during invoicing debugging on 26 Apr 2026 — delete them manually in FreeAgent
 - **MCP OAuth token expiry**: tokens expire around 23 days (shorter than initially assumed). Warning threshold set to 18 days, pause at 23 days. Re-auth: `docker exec -it property-agent claude` then type "authenticate the gmail mcp connection". Update `/flags/mcp-auth-date` with today's date after re-auth.
 - **OB1 `capture_thought` schema error**: if sessions report `upsert_thought function not found in schema cache`, run `NOTIFY pgrst, 'reload schema';` in the Supabase SQL editor to reload PostgREST's schema cache.
 - **Schrodinger's maintenance tasks**: the session log claiming a task was "closed" does not guarantee `log_maintenance` actually succeeded. Authoritative source of open tasks is `get_upcoming_maintenance` (tasks with `next_due IS NOT NULL`), not OB thoughts. Fixed in system prompt (Apr 2026).

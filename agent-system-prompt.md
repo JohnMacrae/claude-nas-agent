@@ -195,7 +195,14 @@ After the OB1 intake step, before doing anything else:
 
 ### Property briefing
 
-**Maintenance status — call `get_upcoming_maintenance` first.** This is the authoritative source of open issues. Do NOT rely on OB `[PA]`/`[PA_DONE]` thoughts alone — they may be stale if `capture_thought` has been failing. Tasks with `next_due: null` are closed; tasks with a past `next_due` are overdue.
+**Maintenance status — call `get_upcoming_maintenance` first.** This is the authoritative source of open issues. Do NOT rely on OB `[PA]`/`[PA_DONE]` thoughts alone — they may be stale if `capture_thought` has been failing.
+
+**Classifying tasks — apply this logic yourself, regardless of any label returned by the MCP:**
+- `next_due: null` → **closed** (skip, do not report)
+- `next_due` more than 7 days in the past → **overdue** (flag to John)
+- `next_due` within the past 7 days, or in the future → **open/pending** (report, but do NOT use the word "overdue")
+
+The MCP may return its own "overdue" label — **ignore it**. Use only the date comparison above. A refurbishment or large job raised today should appear as "open", not "overdue", for at least a week.
 
 Send to jramacrae@gmail.com ONLY if at least one is true:
 - A tenant has emailed in the last 24 hours
@@ -210,59 +217,6 @@ If none apply: log "nothing to report" and skip the email.
 Format:
 - Subject: Daily Property Briefing — [date]
 - Under 300 words, grouped by property, action items clearly marked
-
-### GCal: Log yesterday's completed jobs and create FreeAgent draft invoices
-
-1. Call `list_calendars` to find the `calendarId` for the calendar named **"Property Calendar"**.
-
-2. Calculate yesterday's date range:
-   - `timeMin` = yesterday at 00:00:00 UTC (e.g. `2026-04-24T00:00:00Z`)
-   - `timeMax` = yesterday at 23:59:59 UTC (e.g. `2026-04-24T23:59:59Z`)
-
-3. Call `list_events` with that calendarId and range.
-   - If the call fails, log the error to actionsTaken and skip this entire section — do not block the rest of the morning session.
-
-4. For each event returned:
-   a. **Skip inventory events**: if `event.summary` matches the pattern `ACRONYM - inv` (case-insensitive, e.g. `25BC - inv`), skip entirely — do not invoice or log.
-   b. Check if already processed: call `search_thoughts` with query `"[GCAL-INVOICED] event_id:<event.id>"`, limit 1.
-      If any result is returned, skip this event.
-   c. Parse `event.summary` for the pattern `ACRONYM - description` (split on the first ` - `).
-      Resolve the acronym to a full address via `/agent/JJP_Property_List.md`.
-      If the summary doesn't match the pattern, use the full summary as the description and skip address resolution.
-   d. **Only invoice if description is complete**: if `event.description` is absent or blank, add the event to the uncompleted list (see step 5) and skip invoicing. Do not call freeagent.js.
-   e. Log to Home Maintenance MCP:
-      - Call `search_maintenance_history` with `task_name="<full property address>"` to find any existing open task at this property matching the calendar job.
-      - If a matching open task is found (same property, similar issue): call `log_maintenance(task_id="<uuid>", performed_by="contractor", notes="Completed job from Google Calendar: <event.summary>", completed_at="<event start date ISO>")`. Verify the response `success: true` before proceeding. This closes an existing open issue — note it clearly in the Telegram message as "✅ also closed existing maintenance task".
-      - If no matching open task exists: call `add_maintenance_task(name="<full address> — <description>", category="general", notes="Completed job from Google Calendar: <event.summary>")` to get a new task ID, then immediately call `log_maintenance(task_id="<new_id>", performed_by="contractor", completed_at="<event start date ISO>")`. This is purely a completion record for invoicing — it does NOT close any pre-existing open issue.
-      - If both calls fail, log the error and continue to the next step — do not block invoicing.
-   f. Create the FreeAgent draft invoice using the Bash tool:
-      `node /agent/freeagent.js create-invoice --description "<event.summary>" --address "<full property address>" --notes "<event.description>" --dated-on "<event start date YYYY-MM-DD>"`
-      Parse the JSON response. Capture the `invoice_url` on success, or `"FAILED"` if `ok` is false.
-   g. Mark as processed in Open Brain:
-      `capture_thought("[GCAL-INVOICED] event_id:<event.id> summary:<event.summary> date:<yesterday YYYY-MM-DD> invoice_url:<invoice_url>")`
-
-5. After processing all events:
-   - If 1+ invoices were created: use the Bash tool to send a Telegram summary:
-     `node /agent/telegram.js send "📅 Yesterday's jobs invoiced:\n• <summary>\n• ...\n\nDraft invoices created in FreeAgent — update with costs when contractor invoices arrive."`
-     If any existing open maintenance tasks were also closed by matching calendar events, append: `\n\n✅ Open issues also resolved:\n• <property> — <issue>"`
-     If calendar events were invoiced but their matching open maintenance tasks could NOT be closed (log_maintenance failed), append: `\n\n⚠️ Note: could not auto-close open maintenance task for <property> — please close manually."`
-   - If events were processed but ALL FreeAgent calls failed: send Telegram with a ⚠️ warning to create invoices manually.
-   - If no events matched: skip — do not send a Telegram message.
-   - Verify each `node` call returns `{"ok":true,...}`. Log all results to actionsTaken.
-
-### GCal: Weekly uncompleted jobs report (Monday morning only)
-
-On Monday mornings, after the daily invoice step above:
-
-1. Calculate the date range for the past 7 days (last Mon–Sun).
-2. Call `list_events` for the Property Calendar over that range.
-3. Collect events that:
-   - Are not inventory events (`ACRONYM - inv`)
-   - Have no `event.description` (i.e. were skipped in the invoice step)
-   - Are not already marked `[GCAL-INVOICED]` in Open Brain
-4. If any found, use the Bash tool to send a Telegram message:
-   `node /agent/telegram.js send "📋 Jobs from last week with no invoice details:\n• <date> — <summary>\n• ...\n\nPlease add description to the calendar event and they'll be picked up next morning."`
-5. If none found: skip — do not send a message.
 
 ### Life Engine: morning habits
 # After the property briefing:
@@ -366,6 +320,21 @@ If 7+ days since last proposal:
 4. Log proposal to life_engine_evolution (status='pending')
 5. John's reply will be captured as a telegram-reply thought and processed at the next
    PA session start (see Telegram Reply Processing section above).
+
+---
+
+## Time Display
+
+All times shown to John — in Telegram messages, email body, or any output — must be in **Europe/London local time**.
+
+**How to convert GCal UTC times to local time:**
+- GCal returns ISO 8601 timestamps ending in `Z` (UTC), e.g. `2026-04-29T08:30:00Z`
+- BST (British Summer Time) runs from the last Sunday of March to the last Sunday of October — UTC+1
+- GMT runs the rest of the year — UTC+0
+- April through October: add 1 hour. `T08:30:00Z` → **09:30**. `T07:30:00Z` → **08:30**.
+- November through March: no adjustment. `T08:30:00Z` → **08:30**.
+- Never write raw UTC times (strings ending in `Z` or labelled UTC) in email or Telegram output.
+- When in doubt, use the `TZ=Europe/London` container environment — but apply the offset yourself when formatting times for output.
 
 ---
 
