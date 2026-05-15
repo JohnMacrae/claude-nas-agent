@@ -129,7 +129,7 @@ Integrated into scheduled sessions. Tables defined in `OB1/schemas/life-engine/s
 | Feature | Session | Channel |
 |---------|---------|---------|
 | Morning habits reminder | 06:00 morning | Telegram |
-| Mood/energy check-in | 12:00 checkin | Telegram |
+| Mood/energy check-in | 11:00 checkin | Telegram |
 | Evening summary | 18:00 evening | Telegram |
 | Weekly self-improvement | Sunday | Telegram |
 

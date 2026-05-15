@@ -17,6 +17,7 @@ WORKDIR /agent
 COPY package.json ./
 COPY scheduler.js ./
 COPY telegram.js ./
+COPY freeagent.js ./
 RUN chown -R agent:agent /agent
 
 USER agent

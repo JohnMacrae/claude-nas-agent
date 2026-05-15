@@ -35,6 +35,7 @@ if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN || !DEFAULT_CONTACT) {
 }
 
 async function getAccessToken() {
+  if (process.env.FREEAGENT_BEARER_TOKEN) return process.env.FREEAGENT_BEARER_TOKEN;
   const params = new URLSearchParams({
     grant_type:    'refresh_token',
     refresh_token: REFRESH_TOKEN,
@@ -176,6 +177,16 @@ async function createInvoice({ description, notes, address, datedOn, contact }) 
     : [description];
 
   const invoice_items = lines.flatMap(parseLineItem);
+
+  // Apply minimum 1-hour charge if no billable line items were parsed
+  if (!invoice_items.some(i => i.item_type !== 'Comment')) {
+    invoice_items.unshift({
+      description: 'Minimum charge (1 hour)',
+      item_type:   'Hours',
+      quantity:    1,
+      price:       String(RATES.labour.first_hour_gbp),
+    });
+  }
 
   const body = {
     invoice: {
