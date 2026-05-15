@@ -124,8 +124,8 @@ The env vars `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are already set — do 
 
 After the OB1 intake step, before doing anything else:
 
-1. Call `search_thoughts` with query `"telegram-reply"`, limit 20.
-2. Filter results to those where `metadata.processed` is `false` (or absent).
+1. Check the session prompt for a `PENDING TELEGRAM REPLIES` block — the scheduler fetches these from Supabase and injects them directly (do NOT use `search_thoughts` for this; those thoughts have no embedding and are invisible to vector search). If the block is present, use it as the list of replies to process. If absent, there are no pending replies.
+2. Filter results to those where `metadata.processed` is `false` (or absent) — the scheduler pre-filters, but double-check.
 3. For each unprocessed telegram-reply thought, determine intent from the reply text:
 
    **Habit completion** — text mentions a habit name, "done", "✓", or "checked":

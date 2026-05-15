@@ -241,8 +241,18 @@ async function launchSession(trigger, context = null) {
     return;
   }
 
+  const pendingReplies = await fetchPendingTelegramReplies();
+  let repliesBlock = '';
+  if (pendingReplies.length > 0) {
+    const lines = pendingReplies.map(r =>
+      `- id:${r.id} message_id:${r.metadata?.telegram_message_id} received:${r.metadata?.received_at} text:"${r.content.replace(/^\[TELEGRAM-REPLY\]\s*/, '')}"`
+    ).join('\n');
+    repliesBlock = ` PENDING TELEGRAM REPLIES (${pendingReplies.length} unprocessed — process these first per the Telegram Reply Processing instructions):\n${lines}`;
+    log(`Injecting ${pendingReplies.length} pending telegram reply(ies) into session prompt`);
+  }
+
   const now = new Date();
-  const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.${context ? ` Context: ${context}` : ''}`;
+  const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.${repliesBlock}${context ? ` Context: ${context}` : ''}`;
 
   const args = [
     '--print',
@@ -422,6 +432,22 @@ function supabaseRequest(method, path, body) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+// --- Pending Telegram replies fetcher ---
+
+async function fetchPendingTelegramReplies() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  try {
+    const rows = await supabaseRequest('GET',
+      '/thoughts?content=like.*TELEGRAM-REPLY*&select=id,content,metadata,created_at&order=created_at.asc&limit=20'
+    );
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(r => !r.metadata?.processed);
+  } catch (e) {
+    log(`fetchPendingTelegramReplies error: ${e.message}`);
+    return [];
+  }
 }
 
 // --- Telegram outbound helper ---
