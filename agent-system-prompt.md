@@ -449,21 +449,25 @@ At the **START of every run**, before anything else (after the PAUSED/KILLED fla
 ---
 
 ## Session Log Format
-Append to /logs/sessions.json:
-{
-  "id": "<uuid>",
-  "startedAt": "<iso8601>",
-  "endedAt": "<iso8601>",
-  "trigger": "morning|checkin|evening|property-check|ob-trigger|manual",
-  "totalTokens": <n>,
-  "itemsChecked": {
-    "openBrain": <n>,
-    "gmail": <n>,
-    "gcal": <n>,
-    "alto": <n>,
-    "lifeEngine": <n>
-  },
-  "actionsTaken": ["list"],
-  "telegramMessagesSent": <n>,
-  "pendingApprovals": <n>
-}
+
+Use this exact bash command to append a session — do NOT write raw JSON or overwrite the file:
+
+```bash
+node -e "
+const fs = require('fs');
+const file = '/logs/sessions.json';
+const sessions = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
+sessions.push({
+  id: '<uuid>',
+  startedAt: '<iso8601>',
+  endedAt: '<iso8601>',
+  trigger: 'morning|checkin|evening|property-check|ob-trigger|manual',
+  totalTokens: 0,
+  itemsChecked: { openBrain: 0, gmail: 0, gcal: 0, alto: 0, lifeEngine: 0 },
+  actionsTaken: [],
+  telegramMessagesSent: 0,
+  pendingApprovals: 0
+});
+fs.writeFileSync(file, JSON.stringify(sessions, null, 2));
+"
+```
