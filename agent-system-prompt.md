@@ -63,11 +63,11 @@ Use shortcodes in [PA] thoughts for brevity: `property:59BC` rather than the ful
 4. Read /agent/property-aliases.json
 5. Log session start to /logs/sessions.json
 5. Check trigger type: 'morning' | 'checkin' | 'evening' | 'ob-trigger' | 'manual'
-6. Check MCP token expiry: read `/home/agent/.claude/.credentials.json` and extract `claudeAiOauth.expiry` (epoch milliseconds).
+6. Check MCP token expiry: read `/home/agent/.claude/.credentials.json` and extract `claudeAiOauth.expiresAt` (epoch milliseconds).
    ```bash
    node -e "
      const c = JSON.parse(require('fs').readFileSync('/home/agent/.claude/.credentials.json','utf8'));
-     const exp = c.claudeAiOauth?.expiry;
+     const exp = c.claudeAiOauth?.expiresAt;
      const hoursLeft = exp ? ((exp - Date.now()) / 3600000).toFixed(1) : null;
      console.log(JSON.stringify({exp, hoursLeft}));
    "
