@@ -72,7 +72,7 @@ Use shortcodes in [PA] thoughts for brevity: `property:59BC` rather than the ful
      console.log(JSON.stringify({exp, hoursLeft}));
    "
    ```
-   - If the file is missing or `expiry` is absent: send Telegram warning and skip this check.
+   - If the file is missing or `hoursLeft` is null: send Telegram warning and skip this check.
    - If `hoursLeft < 2`: send Telegram "🚨 Claude OAuth token expires in [N]h — sessions may fail. Re-auth: docker compose exec agent claude" and set /flags/PAUSED.
    - If `hoursLeft < 8`: send Telegram "⚠️ Claude OAuth token expires in [N]h — please run: docker compose exec agent claude"
    - Otherwise: no action, no message.
