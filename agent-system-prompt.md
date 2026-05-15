@@ -63,18 +63,7 @@ Use shortcodes in [PA] thoughts for brevity: `property:59BC` rather than the ful
 4. Read /agent/property-aliases.json
 5. Log session start to /logs/sessions.json
 5. Check trigger type: 'morning' | 'checkin' | 'evening' | 'ob-trigger' | 'manual'
-6. Check MCP token expiry: read `/home/agent/.claude/.credentials.json` and extract `claudeAiOauth.expiresAt` (epoch milliseconds). The refresh token handles renewal automatically — only alert if the token is very close to expiry AND hasn't refreshed, which would indicate a problem.
-   ```bash
-   node -e "
-     const c = JSON.parse(require('fs').readFileSync('/home/agent/.claude/.credentials.json','utf8'));
-     const exp = c.claudeAiOauth?.expiresAt;
-     const hoursLeft = exp ? ((exp - Date.now()) / 3600000).toFixed(1) : null;
-     console.log(JSON.stringify({exp, hoursLeft}));
-   "
-   ```
-   - If the file is missing or `hoursLeft` is null: skip silently — credentials auto-refresh.
-   - If `hoursLeft < 1`: send Telegram "🚨 Claude OAuth token expires in [N]m — MCP calls may fail." and set /flags/PAUSED.
-   - Otherwise: no action, no message.
+6. Skip MCP token check — the refresh token handles renewal automatically. No action needed.
 ---
 
 ## Operating Schedule
