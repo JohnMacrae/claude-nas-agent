@@ -280,8 +280,8 @@ async function launchSession(trigger, context = null) {
     logStream.end();
     sessionRunning = false;
     log(`${trigger} session ended (exit ${code}) — log: ${logPath}`);
-    if (code === 0) {
-      try { await markTelegramRepliesProcessed(logPath); } catch (e) { log(`markTelegramRepliesProcessed failed: ${e.message}`); }
+    if (code === 0 && pendingReplies.length > 0) {
+      try { await markTelegramRepliesProcessed(pendingReplies); } catch (e) { log(`markTelegramRepliesProcessed failed: ${e.message}`); }
     }
     // Run watchdog check after every session
     try { await runWatchdogCheck(); } catch (e) { log(`Watchdog check failed: ${e.message}`); }
@@ -439,27 +439,15 @@ function supabaseRequest(method, path, body) {
 
 // --- Pending Telegram replies fetcher & processor ---
 
-async function markTelegramRepliesProcessed(logPath) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return;
-  let logContent;
-  try { logContent = fs.readFileSync(logPath, 'utf8'); } catch { return; }
-
-  // Extract thought UUIDs from [TELEGRAM-PROCESSED] id:<uuid> lines
-  const matches = [...logContent.matchAll(/\[TELEGRAM-PROCESSED\]\s+id:([0-9a-f-]{36})/gi)];
-  if (!matches.length) return;
-
-  const ids = [...new Set(matches.map(m => m[1]))];
-  log(`Marking ${ids.length} telegram reply thought(s) as processed`);
-
-  for (const id of ids) {
+async function markTelegramRepliesProcessed(replies) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !replies.length) return;
+  log(`Marking ${replies.length} telegram reply thought(s) as processed`);
+  for (const reply of replies) {
     try {
-      // Fetch current metadata, merge processed:true, PATCH back
-      const rows = await supabaseRequest('GET', `/thoughts?id=eq.${id}&select=metadata`);
-      if (!Array.isArray(rows) || !rows.length) continue;
-      const merged = { ...(rows[0].metadata || {}), processed: true };
-      await supabaseRequest('PATCH', `/thoughts?id=eq.${id}`, { metadata: merged });
+      const merged = { ...(reply.metadata || {}), processed: true };
+      await supabaseRequest('PATCH', `/thoughts?id=eq.${reply.id}`, { metadata: merged });
     } catch (e) {
-      log(`Failed to mark thought ${id} processed: ${e.message}`);
+      log(`Failed to mark thought ${reply.id} processed: ${e.message}`);
     }
   }
 }

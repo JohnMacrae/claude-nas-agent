@@ -171,11 +171,7 @@ After the OB1 intake step, before doing anything else:
    - Capture an observation thought in Open Brain with the text
    - Send: `node /agent/telegram.js send "Noted — logged to Open Brain."`
 
-4. After processing each thought, capture an OB thought so the scheduler can mark it processed:
-   ```
-   [TELEGRAM-PROCESSED] id:<thought_uuid> intent:<habit|checkin|approval|maintenance|general|hours-log> at:<iso-timestamp>
-   ```
-   The scheduler reads this at session end and PATCHes Supabase automatically.
+4. After processing each thought, no further action is needed to mark it — the scheduler automatically marks all injected replies as processed after the session exits successfully.
 
 5. If no unprocessed telegram-reply thoughts found: skip this section silently.
 
