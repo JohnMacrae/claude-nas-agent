@@ -1,6 +1,6 @@
 # HANDOFF.md — Property Agent
 
-Last updated: 2026-04-27
+Last updated: 2026-05-15
 
 ---
 
@@ -36,6 +36,11 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 - **Scheduler fix** — morning/checkin/evening sessions now fire outside the property-check operating window (were being suppressed by the `isOperatingHours` guard)
 - **DST/timezone fix (Apr 2026)** — added `TZ=Europe/London` to `compose.yml`; without this the container ran UTC and all sessions fired 1 hour late during BST
 - **freeagent.js — hrs/h support** — `parseLineItem` regex extended to recognise `hr`, `hrs`, and `h` as time unit abbreviations in addition to `hour`/`hours` (e.g. `2 hrs`, `1h`)
+- **Maintenance calendar for WO events (May 2026)** — WO calendar events now route to the "Maintenance" calendar (not Property Calendar). Three places updated in `agent-system-prompt.md`: Permitted Actions, job-completion lookup, and [PA] maintenance intake.
+- **Calendar backfill (May 2026)** — 27 WO events added retrospectively to Property Calendar for WO001446–WO001488 (Mar–May 2026) after Gmail scan vs calendar comparison. WO001488 already present from live processor; total coverage now WO001271–WO001488.
+- **Work-order Gmail scan switched to jramacrae@gmail.com** — was kk4oyj@gmail.com until early March 2026, now jramacrae@gmail.com receives Rentopia WO emails. `docker-compose.yml` in `mail-reader` already uses jramacrae credentials.
+- **Gmail OAuth re-authentication (May 2026)** — jramacrae token expired (old OAuth client revoked after credentials.json regeneration in April). Re-authenticated using new `installed`-type OAuth client via SSH tunnel + browser paste-code flow. Token saved to `/volume1/docker/gmail-mcp/config/jramacrae/token.json`.
+- **Address parser fix (May 2026)** — `work_order_processor.py` `addr_to_shortcode()` now tries progressively shorter word sequences after the house number. Fixes "48, Grantchester Court, Bignell Croft" → `48BC` (comma after number caused full string "48 grantchester court bignell croft" to miss SHORTCODES lookup).
 - **Property Calendar audit (Apr 2025–Apr 2026)** — full audit of 196 events; 31 events updated:
   - 7 events: time expressions moved to own line (were embedded at end of task line, e.g. `Replace waste 1.5 hours` → two lines)
   - 22 events: hours added to descriptions + summaries reformatted to `ACRONYM - description` pattern
@@ -307,6 +312,7 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 - `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
 - **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `cd /volume1/docker/property-agent && docker compose restart agent`
 - **MCP OAuth token expiry**: tokens expire around 23 days (shorter than initially assumed). Warning threshold set to 18 days, pause at 23 days. Re-auth: `docker exec -it property-agent claude` then type "authenticate the gmail mcp connection". Update `/flags/mcp-auth-date` with today's date after re-auth.
+- **Gmail work-order token expiry**: the `work-order-processor` uses `/volume1/docker/gmail-mcp/config/jramacrae/token.json`. If the underlying OAuth client credentials are regenerated in Google Cloud Console, the refresh token becomes invalid (`invalid_grant`). Re-auth procedure: run `docker run --rm -v .../jramacrae:/gmail-config -v /tmp/get_token_headless.py:/app/... -p 9090:9090 mail-reader-work-order-processor python get_token_headless.py` with an SSH tunnel, OR use the two-step paste-code approach (generate URL → paste redirect URL back). Scripts at `/volume1/docker/gmail-mcp/get_token.py` and `/tmp/get_token_headless.py`.
 - **OB1 `capture_thought` schema error**: if sessions report `upsert_thought function not found in schema cache`, run `NOTIFY pgrst, 'reload schema';` in the Supabase SQL editor to reload PostgREST's schema cache.
 - **Schrodinger's maintenance tasks**: the session log claiming a task was "closed" does not guarantee `log_maintenance` actually succeeded. Authoritative source of open tasks is `get_upcoming_maintenance` (tasks with `next_due IS NOT NULL`), not OB thoughts. Fixed in system prompt (Apr 2026).
 
@@ -330,4 +336,4 @@ Property references accept shortcodes (e.g. `59BC`) or full address (number + st
 
 Start a new conversation with:
 
-"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026. 7 test draft invoices still need deleting in FreeAgent (see Known Issues). Next priorities: delete test invoices, then generate the backlog of Apr 2025–Apr 2026 invoices, then Approval UI or Alto integration."
+"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026, and all WOs since March 2026 (WO001446–WO001488) have been backfilled. Going forward, WO calendar events land in the Maintenance calendar. 7 test draft invoices still need deleting in FreeAgent (see Known Issues). Next priorities: delete test invoices, then generate the backlog of Apr 2025–Apr 2026 invoices, then Approval UI or Alto integration."

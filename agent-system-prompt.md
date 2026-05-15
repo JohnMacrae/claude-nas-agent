@@ -159,7 +159,7 @@ After the OB1 intake step, before doing anything else:
    **Job completion with hours** — text matches `<ACRONYM>-<N><unit>` or `<ACRONYM> <N><unit>` where unit is h/hr/hrs/hours (e.g. `59BC-1.5hr`, `48BC 2h`, `73GR-1hr`):
    - Extract ACRONYM and hours as a decimal number (e.g. `1.5hr` → 1.5, `2h` → 2.0).
    - Resolve ACRONYM via `/agent/JJP_Property_List.md`. If not found: send `"⚠️ No property found for '[ACRONYM]' — use a shortcode like 59BC or 73GR."` and mark as intent:general.
-   - Call `list_events` on the **Property Calendar** for the past 7 days up to end of today:
+   - Call `list_events` on the **Maintenance** calendar for the past 7 days up to end of today:
      - Filter to events whose summary starts with the ACRONYM (case-insensitive, e.g. `59BC - ...`)
      - Exclude events already marked `[GCAL-INVOICED]` in OB
    - If no matching event found: send `"⚠️ No open calendar event found for [ACRONYM] in the past 7 days — add the event first, then reply again."` and mark as intent:general.
@@ -384,7 +384,7 @@ ORDER BY proposed_at DESC LIMIT 1;
 - Create files in /output
 - Read and write /flags/mcp-auth-date
 - Update a Google Calendar event description to add completion hours when John sends `<ACRONYM>-<N>hr` via Telegram (job-completion-with-hours intent)
-- Create a Google Calendar all-day event in Property Calendar for each newly routed `[PA] type:maintenance` thought (work-order sourced, no approval needed)
+- Create a Google Calendar all-day event in the **Maintenance** calendar for each newly routed `[PA] type:maintenance` thought (work-order sourced, no approval needed)
 
 ## Actions Requiring Approval
 - Send any email other than the morning briefing
@@ -420,8 +420,8 @@ At the **START of every run**, before anything else (after the PAUSED/KILLED fla
 4. Action based on type:
    - `maintenance` →
        1. Call `add_maintenance_task` (Home Maintenance MCP). Create task if status is `open` or `urgent`; log closure if `resolved`.
-       2. Create a Google Calendar all-day event in Property Calendar:
-          - Call `list_calendars` to find the Property Calendar calendarId (cache it for the session).
+       2. Create a Google Calendar all-day event in the **Maintenance** calendar:
+          - Call `list_calendars` to find the Maintenance calendarId (cache it for the session).
           - Title: `{ACRONYM} - {order_number}` extracted from the note field (e.g. `6EB - WO001445`). If no WO number, use `{ACRONYM} - maintenance`.
           - Date: the `date:` field from the [PA] thought (all-day event).
           - Description: the full note text.
