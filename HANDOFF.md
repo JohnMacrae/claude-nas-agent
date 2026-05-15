@@ -46,8 +46,9 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
   - 22 events: hours added to descriptions + summaries reformatted to `ACRONYM - description` pattern
   - 6 events: descriptions cleared (access/survey notes with no billable labour)
   - Multi-property event (`CO Alarms 10JS, 79AW, 6EB`) and `Valuations` event left as-is; single invoice against default contact — split manually if needed
-- **Telegram reply pipeline fix (May 2026)** — replies captured by Supabase `telegram-capture` but never processed: they have no embedding so `search_thoughts` (vector search) can't find them. Fix: `scheduler.js` now fetches unprocessed `[TELEGRAM-REPLY]` thoughts from Supabase REST before each session and injects them directly into the Claude prompt. Backlog of 11 unprocessed replies cleared (25BC, 75FWG, EICR tasks, 40WSS tasks). Image rebuilt.
-- **OAuth auth check fix (May 2026)** — agent was warning daily about MCP renewal based on a stale `mcp-auth-date` flag (last written 27 Apr, token was actually refreshing fine). Replaced with a direct check of `claudeAiOauth.expiry` in `.credentials.json`: warns at <8h remaining, pauses at <2h. Stale flag removed.
+- **Telegram reply pipeline fix (May 2026)** — replies captured by Supabase `telegram-capture` but never processed: they have no embedding so `search_thoughts` (vector search) can't find them. Fix: `scheduler.js` now fetches unprocessed `[TELEGRAM-REPLY]` thoughts from Supabase REST before each session and injects them directly into the Claude prompt. Backlog of 12 unprocessed replies cleared (25BC, 75FWG, EICR tasks, 40WSS tasks).
+- **Telegram reply processed-marking (May 2026)** — after each successful session, the scheduler PATCHes Supabase to mark all injected replies `processed: true` using the IDs it already holds — no agent SQL or execute_sql needed. Eliminates re-processing backlog that was causing ~7 min sessions; sessions now run in ~2 min.
+- **OAuth auth check removed (May 2026)** — repeated attempts to track token expiry caused false PAUSED states and noisy warnings. The `claudeAiOauth` refresh token handles renewal automatically; no manual intervention or monitoring needed. Check removed entirely.
 - **sessions.json repair (May 2026)** — file was corrupted (leading comma, then NDJSON appended after closing `]`). Rebuilt from recovered data; system prompt updated to use an atomic `node` read-modify-write so agents can't corrupt it again.
 
 ### 🔲 Next
@@ -55,8 +56,6 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 - Alto API integration (credentials pending)
 - Remove old `claude.ai Open Brain` Supabase connector from claude.ai → Settings → Connectors
 - OpenRent/Rentr browser skills (Phase 2)
-- Investigate `claudeAiOauth.expiry` missing from credentials (flagged in 15 May test session)
-- Resolve 75FWG duplicate maintenance tasks (c5f42058 vs 4160ca03)
 
 ---
 
