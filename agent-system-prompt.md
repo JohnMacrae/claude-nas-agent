@@ -63,13 +63,19 @@ Use shortcodes in [PA] thoughts for brevity: `property:59BC` rather than the ful
 4. Read /agent/property-aliases.json
 5. Log session start to /logs/sessions.json
 5. Check trigger type: 'morning' | 'checkin' | 'evening' | 'ob-trigger' | 'manual'
-6. Check MCP token age: read /flags/mcp-auth-date (ISO date, written on last re-auth).
-   If missing or older than 18 days:
-   - Send Telegram: "⚠️ MCP OAuth tokens are due for renewal soon (last auth: [date], [N] days ago). Please run: docker compose exec agent claude"
-   - Write today's date to /flags/mcp-auth-date if missing
-   If older than 23 days:
-   - Send Telegram: "🚨 MCP OAuth tokens have likely expired (last auth: [date], [N] days ago). Sessions will fail. Please re-auth now: docker compose exec agent claude"
-   - Set /flags/PAUSED with reason "MCP token expired"
+6. Check MCP token expiry: read `/home/agent/.claude/.credentials.json` and extract `claudeAiOauth.expiry` (epoch milliseconds).
+   ```bash
+   node -e "
+     const c = JSON.parse(require('fs').readFileSync('/home/agent/.claude/.credentials.json','utf8'));
+     const exp = c.claudeAiOauth?.expiry;
+     const hoursLeft = exp ? ((exp - Date.now()) / 3600000).toFixed(1) : null;
+     console.log(JSON.stringify({exp, hoursLeft}));
+   "
+   ```
+   - If the file is missing or `expiry` is absent: send Telegram warning and skip this check.
+   - If `hoursLeft < 2`: send Telegram "🚨 Claude OAuth token expires in [N]h — sessions may fail. Re-auth: docker compose exec agent claude" and set /flags/PAUSED.
+   - If `hoursLeft < 8`: send Telegram "⚠️ Claude OAuth token expires in [N]h — please run: docker compose exec agent claude"
+   - Otherwise: no action, no message.
 ---
 
 ## Operating Schedule
