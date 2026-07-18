@@ -1,6 +1,6 @@
 # Status — 18/07/2026
 
-**State:** Code decoupled from OB1. Local store + `/inbox` + Telegram getUpdates. Life Engine sessions removed.
-**Needs:** Dedicated Property Agent Telegram bot token in `.env` (current token still has OBBot webhook → `getUpdates` 409). Rebuild already done 2026-07-18; `/status` and `/inbox` verified.
-**Blocker:** Work-order processor Gmail auth still `invalid_grant` (since 2026-05-22). Alto MCP still unavailable.
-**Next:** Create property Telegram bot, rebuild, smoke-test `/status` + `/inbox`.
+**State:** Running. Decoupled from OB1. Property-docs Postgres + ingest + tika healthy. Agent rebuilt with store/maintenance/docs CLIs.
+**Last activity:** dcp — NEXT.md refreshed; repos pushed (claude-nas-agent + property-docs).
+**Blocker:** Maintenance history not yet migrated from Supabase. Telegram getUpdates 409 until dedicated property bot token.
+**Next:** Run `migrate_maintenance.py` dry-run/apply; new Telegram bot; Paperless batch import.
