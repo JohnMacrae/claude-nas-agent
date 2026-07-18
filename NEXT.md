@@ -1,6 +1,6 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: 2026-07-18 17:55
+Last updated: 2026-07-18 18:05
 
 ## Goal
 
@@ -51,16 +51,20 @@ Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/John
 2. **Show Result** / **Speak Text** on the `reply` field from the JSON response
 3. Example phrases: “number for 24HC”, “open tasks at 40WSS”, “mark 40WSS complete”
 
+### Google Calendar auth (2026-07-18)
+- Reused rentr-dashboard OAuth client; fresh `GOOGLE_REFRESH_TOKEN` after browser consent (`calendar.events` scope)
+- Verified: `gcal.js list-events --calendar Maintenance` → ok (e.g. 24HC WO001535, 14FWG WO001536)
+- Note: `list-calendars` may 403 on this scope; event ops use hardcoded Maintenance/Property IDs
+- Re-auth if needed: forward `8765`, open http://localhost:8765/admin/google-auth (http not https), copy token into property-agent `.env`
+
 ## Still open
 
 1. **Auto-save WO PDFs** on work-order-processor intake → `output/work_orders`
-2. **Google Calendar refresh token** — `GOOGLE_CLIENT_ID`/`SECRET` in `.env`; `GOOGLE_REFRESH_TOKEN` still empty
-3. **Paperless import at scale** — bridge ready; decide batch size / filters
-4. **Optional:** fix/delete the 6 unmatched maintenance rows; rotate OpenRouter key; change property-docs Postgres password if still default
+2. **Paperless import at scale** — bridge ready; decide batch size / filters
+3. **Optional:** fix/delete the 6 unmatched maintenance rows; rotate OpenRouter key; change property-docs Postgres password if still default
 
 ## Next actions (priority)
 
 1. Auto-save Supplier Instructed PDFs into `output/work_orders` on WO intake + `wo_scan`
-2. Issue Calendar-scoped `GOOGLE_REFRESH_TOKEN` and verify `gcal_list_events`
-3. Add iPhone Siri Shortcut(s) for `/command`
-4. Paperless bridge import (filtered or batched)
+2. Add iPhone Siri Shortcut(s) for `/command`
+3. Paperless bridge import (filtered or batched)
