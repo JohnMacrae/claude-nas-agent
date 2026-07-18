@@ -1,6 +1,6 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: 2026-07-18 12:07 (dcp)
+Last updated: 2026-07-18 17:55
 
 ## Goal
 
@@ -10,7 +10,7 @@ Standalone business property stack: local Postgres knowledge store (docs + seman
 
 | Container | Status |
 |-----------|--------|
-| `property-agent` | Up — `/status` OK, watchdog OK, inbox 0 |
+| `property-agent` | Up — OpenRouter runner (`google/gemini-2.5-flash`), `/command` OK, Telegram OK |
 | `property-docs-db` | Healthy — host **5435** |
 | `property-docs-tika` | Up |
 | `property-docs-ingest` | Up — consume poller |
@@ -22,28 +22,45 @@ Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/John
 ### Decouple from OB1
 - Local store CLI, `POST /inbox`, Telegram getUpdates, Life Engine sessions removed
 - Open Brain MCP removed; WO processor posts to `/inbox`
-- Docs: README, HANDOFF, PROJECT, `docs/what-this-does.html`, this file
 
 ### Property Docs (`/volume1/docker/property-docs/`)
-- Postgres + pgvector schema (documents/chunks, ops queues, `property_maintenance_*`)
-- Ingest worker + Tika; Paperless bridge script verified (2-doc smoke, ~4.7k available)
-- Git + remote established
+- Postgres + pgvector; ingest + Tika; Paperless bridge ready
+- Maintenance migrate from Supabase (80 tasks / 16 logs); 6 unmatched shortcodes remain
 
-### Property Agent
-- `db.js` / `store.js` / `maintenance.js` / `docs.js` against property-docs
-- System prompt uses local CLIs only (no HM MCP / Paperless / OB1)
-- Image rebuilt; container running with `DATABASE_URL` + `OPENROUTER_API_KEY`
+### Property Agent — OpenRouter + voice commands (2026-07-18)
+- Replaced `claude` spawn with `agent/agent-runner.js` (OpenRouter tool loop, model `AGENT_MODEL` default `google/gemini-2.5-flash`)
+- New: `gcal.js`, `pending.js` (slim confirm state), `POST /command` (Siri Shortcuts)
+- Prompt retargeted to discrete tools (no Bash / no Claude MCP)
+- Claude Code removed from image; `~/.claude` mounts dropped from compose
+- Verified: `POST /command` “number for 24HC” → tenant names + mobiles (~3s) + Telegram
+- Also verified: open tasks at 40WSS
+
+### Tenant contacts from WO PDFs (2026-07-18)
+- Source of truth: Rentopia **Supplier Instructed.pdf** → `Contact for Access` + `Mobile:`
+- Store: `/output/work_orders/*.pdf` → cache `/data/tenant-contacts.json` via `wo.js`
+- Agent tool: `wo_lookup` — “number for 24HC” → tenant name(s) + mobile(s), not the street address
+- Verified 24HC from WO001535: Juliet + Chibuzo Nwachukwu numbers
+- **Gap:** processor does not yet auto-save PDFs into `output/work_orders` on intake — drop PDFs there (or fetch) then `wo_scan`
+
+### Siri Shortcut (manual setup on iPhone)
+1. Shortcut: **Get Contents of URL**
+   - URL: `http://<tailscale-host>:3005/command` (or LAN IP)
+   - Method: POST
+   - Headers: `Content-Type: application/json`, `X-Command-Token: <COMMAND_TOKEN from .env>`
+   - Body (JSON): `{"text":"<Dictated Text>"}` — use Shortcut “Ask for Input” / Dictate Text
+2. **Show Result** / **Speak Text** on the `reply` field from the JSON response
+3. Example phrases: “number for 24HC”, “open tasks at 40WSS”, “mark 40WSS complete”
 
 ## Still open
 
-1. **Run maintenance migrate** — dry-run then live (`SUPABASE_*` from `mail-reader/.env`)
-2. **Dedicated Property Telegram bot** — shared OBBot token → `getUpdates` 409
+1. **Auto-save WO PDFs** on work-order-processor intake → `output/work_orders`
+2. **Google Calendar refresh token** — `GOOGLE_CLIENT_ID`/`SECRET` in `.env`; `GOOGLE_REFRESH_TOKEN` still empty
 3. **Paperless import at scale** — bridge ready; decide batch size / filters
-4. **Optional:** rotate OpenRouter key (brief tool-log exposure during parallel build)
-5. **Optional:** change property-docs Postgres password if still example default
+4. **Optional:** fix/delete the 6 unmatched maintenance rows; rotate OpenRouter key; change property-docs Postgres password if still default
 
 ## Next actions (priority)
 
-1. `cd /volume1/docker/property-docs/scripts &&` migrate dry-run → apply
-2. Create Property Agent Telegram bot; set token; restart agent
-3. Paperless bridge import (filtered or batched)
+1. Auto-save Supplier Instructed PDFs into `output/work_orders` on WO intake + `wo_scan`
+2. Issue Calendar-scoped `GOOGLE_REFRESH_TOKEN` and verify `gcal_list_events`
+3. Add iPhone Siri Shortcut(s) for `/command`
+4. Paperless bridge import (filtered or batched)

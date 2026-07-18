@@ -16,13 +16,14 @@ services:
       - ./rates.json:/agent/rates.json:ro
       - /volume1/docker/property_details/JJP_Property_List.md:/agent/JJP_Property_List.md:ro
       - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
-      # Mount host Claude Code credentials so OAuth MCPs (GCal) work
-      - /home/john/.claude:/home/agent/.claude:rw
-      - /home/john/.claude.json:/home/agent/.claude.json:rw
-      - /volume1/docker/property-agent/.claude:/agent/.claude:ro
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - AGENT_MODEL=${AGENT_MODEL:-google/gemini-2.5-flash}
+      - COMMAND_TOKEN=${COMMAND_TOKEN}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REFRESH_TOKEN=${GOOGLE_REFRESH_TOKEN:-}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
@@ -36,6 +37,7 @@ services:
       - LOGS_DIR=/logs
       - AGENT_DIR=/agent
       - DATA_DIR=/data
+      - WORK_ORDERS_DIR=/output/work_orders
       # Watchdog thresholds
       - WARN_SESSIONS_PER_HOUR=4
       - PAUSE_SESSIONS_PER_HOUR=6

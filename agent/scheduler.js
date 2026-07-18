@@ -11,6 +11,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const store = require('./store');
+const pending = require('./pending');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
 const LOGS_DIR = process.env.LOGS_DIR || '/logs';
@@ -18,9 +19,12 @@ const AGENT_DIR = process.env.AGENT_DIR || '/agent';
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const SYSTEM_PROMPT_FILE = path.join(AGENT_DIR, 'agent-system-prompt.md');
 const TELEGRAM_OFFSET_FILE = path.join(DATA_DIR, 'telegram-offset.json');
+const RUNNER_PATH = path.join(AGENT_DIR, 'agent-runner.js');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const COMMAND_TOKEN = process.env.COMMAND_TOKEN || '';
+const COMMAND_TIMEOUT_MS = parseInt(process.env.COMMAND_TIMEOUT_MS || '120000', 10);
 
 const THRESHOLDS = {
   sessionsPerHour: {
@@ -228,85 +232,143 @@ async function markTelegramRepliesProcessed(replies) {
 
 // --- Session launcher ---
 
-async function launchSession(trigger, context = null) {
+function parseAgentResult(stdout) {
+  const marker = '===AGENT_RESULT===';
+  const idx = stdout.lastIndexOf(marker);
+  if (idx === -1) return null;
+  const after = stdout.slice(idx + marker.length).trim();
+  const line = after.split('\n').find((l) => l.trim().startsWith('{'));
+  if (!line) return null;
+  try {
+    return JSON.parse(line.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Launch an OpenRouter agent session.
+ * @returns {Promise<{code:number, reply:string, result:object|null, logPath:string}>}
+ */
+async function launchSession(trigger, context = null, options = {}) {
+  const { skipTelegramQueue = false, skipInbox = false } = options;
+
   if (sessionRunning) {
     log(`Session already running — skipping ${trigger}`);
-    return;
+    return { code: 409, reply: '', result: null, logPath: null, skipped: true };
   }
   if (flagExists('PAUSED')) {
     log('PAUSED flag set — skipping session');
-    return;
+    return { code: 423, reply: 'Agent is paused', result: null, logPath: null, skipped: true };
   }
   if (flagExists('KILLED')) {
     log('KILLED flag set — skipping session');
-    return;
+    return { code: 423, reply: 'Agent is killed', result: null, logPath: null, skipped: true };
   }
 
-  let systemPrompt;
-  try {
-    systemPrompt = fs.readFileSync(SYSTEM_PROMPT_FILE, 'utf8');
-  } catch (e) {
-    log(`Cannot read system prompt: ${e.message}`);
-    return;
+  if (!fs.existsSync(SYSTEM_PROMPT_FILE)) {
+    log(`Cannot read system prompt: missing ${SYSTEM_PROMPT_FILE}`);
+    return { code: 1, reply: 'System prompt missing', result: null, logPath: null };
   }
 
-  const pendingReplies = await fetchPendingTelegramReplies();
+  let pendingReplies = [];
   let repliesBlock = '';
-  if (pendingReplies.length > 0) {
-    const lines = pendingReplies.map(r =>
-      `- id:${r.id} message_id:${r.message_id} received:${r.received_at} text:"${(r.text || '').replace(/"/g, "'")}"`
-    ).join('\n');
-    repliesBlock = ` PENDING TELEGRAM REPLIES (${pendingReplies.length} unprocessed — process these first per the Telegram Reply Processing instructions):\n${lines}`;
-    log(`Injecting ${pendingReplies.length} pending telegram reply(ies) into session prompt`);
+  if (!skipTelegramQueue) {
+    pendingReplies = await fetchPendingTelegramReplies();
+    if (pendingReplies.length > 0) {
+      const lines = pendingReplies.map(r =>
+        `- id:${r.id} message_id:${r.message_id} received:${r.received_at} text:"${(r.text || '').replace(/"/g, "'")}"`
+      ).join('\n');
+      repliesBlock = ` PENDING TELEGRAM REPLIES (${pendingReplies.length} unprocessed — process these first per the Telegram Reply Processing instructions):\n${lines}`;
+      log(`Injecting ${pendingReplies.length} pending telegram reply(ies) into session prompt`);
+    }
   }
 
-  const openInbox = await store.listInbox();
   let inboxBlock = '';
-  if (openInbox.length > 0) {
-    inboxBlock = ` OPEN INBOX (${openInbox.length} item(s) — process per Local Inbox Intake):\n${JSON.stringify(openInbox)}`;
-    log(`Injecting ${openInbox.length} open inbox item(s) into session prompt`);
+  if (!skipInbox) {
+    const openInbox = await store.listInbox();
+    if (openInbox.length > 0) {
+      inboxBlock = ` OPEN INBOX (${openInbox.length} item(s) — process per Local Inbox Intake):\n${JSON.stringify(openInbox)}`;
+      log(`Injecting ${openInbox.length} open inbox item(s) into session prompt`);
+    }
+  }
+
+  const confirm = pending.getPending();
+  let pendingBlock = '';
+  if (confirm) {
+    pendingBlock = ` PENDING CONFIRM (active — if this command answers it, resolve then pending_clear; otherwise pending_clear and treat as a new command):\n${JSON.stringify(confirm)}`;
   }
 
   const now = new Date();
-  const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.${repliesBlock}${inboxBlock}${context ? ` Context: ${context}` : ''}`;
+  const prompt = `Run session. Trigger: ${trigger}. Current time: ${now.toISOString()}.${repliesBlock}${inboxBlock}${pendingBlock}${context ? ` Context: ${context}` : ''}`;
 
   const args = [
-    '--print',
-    '--dangerously-skip-permissions',
-    '--system-prompt', systemPrompt,
-    '--max-budget-usd', '1.50',
-    prompt,
+    RUNNER_PATH,
+    '--trigger', trigger,
+    '--system-file', SYSTEM_PROMPT_FILE,
+    '--prompt', prompt,
   ];
 
-  log(`Launching ${trigger} session`);
+  log(`Launching ${trigger} session via OpenRouter runner`);
   sessionRunning = true;
 
   const logPath = path.join(LOGS_DIR, `session-${trigger}-${Date.now()}.log`);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
-  const proc = spawn('claude', args, {
-    env: { ...process.env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  return new Promise((resolve) => {
+    const proc = spawn('node', args, {
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: AGENT_DIR,
+    });
 
-  proc.stdout.pipe(logStream);
-  proc.stderr.pipe(logStream);
+    let stdoutBuf = '';
+    proc.stdout.on('data', (chunk) => {
+      stdoutBuf += chunk;
+      logStream.write(chunk);
+    });
+    proc.stderr.on('data', (chunk) => {
+      logStream.write(chunk);
+    });
 
-  proc.on('close', async (code) => {
-    logStream.end();
-    sessionRunning = false;
-    log(`${trigger} session ended (exit ${code}) — log: ${logPath}`);
-    if (code === 0 && pendingReplies.length > 0) {
-      try { await markTelegramRepliesProcessed(pendingReplies); } catch (e) { log(`markTelegramRepliesProcessed failed: ${e.message}`); }
-    }
-    try { await runWatchdogCheck(); } catch (e) { log(`Watchdog check failed: ${e.message}`); }
-  });
+    proc.on('close', async (code) => {
+      logStream.end();
+      sessionRunning = false;
+      const result = parseAgentResult(stdoutBuf);
+      const reply = (result && result.reply) || '';
+      log(`${trigger} session ended (exit ${code}) — log: ${logPath}`);
+      if (code === 0 && pendingReplies.length > 0) {
+        try { await markTelegramRepliesProcessed(pendingReplies); } catch (e) { log(`markTelegramRepliesProcessed failed: ${e.message}`); }
+      }
+      try { await runWatchdogCheck(); } catch (e) { log(`Watchdog check failed: ${e.message}`); }
+      try {
+        const stillPending = await store.listPendingReplies();
+        if (stillPending.length > 0 && !flagExists('PAUSED') && !flagExists('KILLED') && trigger !== 'command') {
+          log(`${stillPending.length} telegram reply(ies) still pending — launching follow-up session`);
+          launchSession('manual', 'Process pending Telegram replies and respond via Telegram');
+        }
+      } catch (e) {
+        log(`Pending-reply follow-up check failed: ${e.message}`);
+      }
+      resolve({ code: code ?? 1, reply, result, logPath });
+    });
 
-  proc.on('error', (e) => {
-    logStream.end();
-    sessionRunning = false;
-    log(`Failed to start ${trigger} session: ${e.message}`);
+    proc.on('error', (e) => {
+      logStream.end();
+      sessionRunning = false;
+      log(`Failed to start ${trigger} session: ${e.message}`);
+      resolve({ code: 1, reply: `Failed to start: ${e.message}`, result: null, logPath });
+    });
   });
+}
+
+function checkCommandAuth(req) {
+  if (!COMMAND_TOKEN) return false;
+  const header = req.headers['x-command-token'] || '';
+  const auth = req.headers.authorization || '';
+  if (header && header === COMMAND_TOKEN) return true;
+  if (auth.startsWith('Bearer ') && auth.slice(7) === COMMAND_TOKEN) return true;
+  return false;
 }
 
 // --- Scheduler tick ---
@@ -338,7 +400,7 @@ async function tick() {
 
 // --- HTTP control server ---
 
-const VALID_TRIGGERS = ['morning', 'property-check', 'manual', 'http-trigger'];
+const VALID_TRIGGERS = ['morning', 'property-check', 'manual', 'http-trigger', 'command'];
 const HTTP_PORT = process.env.HTTP_PORT || 3001;
 
 function readBody(req) {
@@ -366,8 +428,11 @@ function startHttpServer() {
         watchdogStatus,
         paused: flagExists('PAUSED'),
         killed: flagExists('KILLED'),
+        runner: 'openrouter',
+        model: process.env.AGENT_MODEL || 'google/gemini-2.5-flash',
         openInbox: openInbox.length,
         pendingTelegramReplies: pendingTelegramReplies.length,
+        pendingConfirm: pending.getPending(),
         sessionsLastHour: sessions.filter(s => new Date(s.startedAt).getTime() > hourAgo).length,
         recentSessions: sessions.slice(-5),
         time: new Date().toISOString(),
@@ -455,6 +520,69 @@ function startHttpServer() {
       log('Agent manually resumed via /resume');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: 'Agent resumed' }));
+      return;
+    }
+
+    // Siri Shortcuts / voice commands — sync reply suitable to speak aloud
+    if (req.method === 'POST' && url.pathname === '/command') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let text = '';
+      try {
+        const parsed = JSON.parse(body || '{}');
+        text = (parsed.text || parsed.command || '').trim();
+      } catch {
+        text = (body || '').trim();
+      }
+      if (!text) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'text is required' }));
+        return;
+      }
+
+      if (sessionRunning) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Session already running — try again shortly' }));
+        return;
+      }
+
+      log(`HTTP /command: ${text.slice(0, 120)}`);
+      const started = Date.now();
+      const outcomePromise = launchSession(
+        'command',
+        `VOICE COMMAND (reply in 1–2 short speakable sentences; also telegram_send the same answer): ${text}`,
+        { skipTelegramQueue: true, skipInbox: true }
+      );
+
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; }, COMMAND_TIMEOUT_MS);
+      const outcome = await outcomePromise;
+      clearTimeout(timer);
+
+      if (outcome.skipped) {
+        res.writeHead(outcome.code === 409 ? 409 : 423, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: outcome.reply || 'skipped', pending: pending.getPending() }));
+        return;
+      }
+
+      const reply = outcome.reply || (outcome.result && outcome.result.reply) || '';
+      const ok = outcome.code === 0 && !!(outcome.result && outcome.result.ok !== false);
+      res.writeHead(ok ? 200 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok,
+        reply,
+        pending: pending.getPending(),
+        model: outcome.result?.model || null,
+        usage: outcome.result?.usage || null,
+        elapsed_ms: Date.now() - started,
+        timedOut,
+        log: outcome.logPath,
+      }));
       return;
     }
 
@@ -603,6 +731,7 @@ async function pollTelegramUpdates() {
 
   let offset = readTelegramOffset();
   let updates;
+  let queuedFreeText = false;
   try {
     updates = await telegramApi('getUpdates', {
       offset,
@@ -635,10 +764,20 @@ async function pollTelegramUpdates() {
         received_at: new Date((msg.date || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
       });
       log(`Queued telegram reply id=${reply.id}: ${text.slice(0, 80)}`);
+      // Free-text must not wait for the next morning/property-check (esp. weekends).
+      queuedFreeText = true;
     }
   }
 
   writeTelegramOffset(offset);
+
+  if (queuedFreeText) {
+    if (sessionRunning) {
+      log('Telegram reply queued — session already running; will process after it ends');
+    } else {
+      launchSession('manual', 'Process pending Telegram replies and respond via Telegram');
+    }
+  }
 }
 
 // --- Entry point ---
@@ -666,6 +805,17 @@ async function main() {
   await tick();
   await runWatchdogCheck();
   try { await pollTelegramUpdates(); } catch (e) { log(`Telegram poll failed: ${e.message}`); }
+
+  // Catch replies queued while getUpdates was broken / over a weekend with no schedule.
+  try {
+    const backlog = await store.listPendingReplies();
+    if (backlog.length > 0) {
+      log(`Startup: ${backlog.length} pending telegram reply(ies) — launching session`);
+      launchSession('manual', 'Process pending Telegram replies and respond via Telegram');
+    }
+  } catch (e) {
+    log(`Startup pending-reply check failed: ${e.message}`);
+  }
 
   log('Scheduler running (standalone — no OB1)');
 }
