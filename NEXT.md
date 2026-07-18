@@ -56,7 +56,7 @@ Standalone business property stack: local Postgres knowledge store (docs + seman
 2. Rebuild/restart `property-agent`; smoke-test `/status`, `store.js`, `maintenance.js`, `docs.js`
 3. Ingest sample PDF via consume/; Paperless bridge `--dry-run --limit 20`
 4. New Telegram bot token for property ops
-5. Put `property-docs` under git + remote (stack exists on disk; not yet a repo at dcp time)
+5. ~~Put property-docs under git~~ — done: https://github.com/JohnMacrae/property-docs
 
 ## Key URLs / paths
 
