@@ -1,52 +1,54 @@
 # Property Agent
 
-An autonomous Claude Code agent running on a self-hosted NAS, acting as a subagent of [Open Brain (OB1)](../OB1). Manages 59 residential rental properties and personal productivity. Runs on a defined schedule and can be triggered by OB1's MCP, pushing output via email, Pushover, and Telegram.
+A standalone Claude Code agent on a self-hosted NAS for **rental property management** (business). It runs on a defined schedule and via HTTP trigger, pushing output via email, Pushover, and Telegram.
+
+Decoupled from Open Brain (OB1) and personal Life Engine. Memory is a local JSON store under `data/`.
 
 ---
 
 ## Architecture
 
 ```
-OB1 (MCP server, ob1 container)
-  └── trigger_property_agent tool → POST http://property-agent:3001/trigger
-        ↓
+work-order-processor ──POST /inbox──┐
+HTTP client ──POST /trigger─────────┤
+Telegram getUpdates ───────────────┤
+                                   ▼
 property-agent container (scheduler.js)
   └── spawns: claude --print --dangerously-skip-permissions --max-budget-usd 1.50
         ↓
-        MCPs: Open Brain (local ob1) · Gmail · Google Calendar
-        Notifications: Telegram · Pushover · Email
+        MCPs: Google Calendar · Home Maintenance
+        Local store: /data (inbox, actions, invoices, telegram-replies)
+        Utils: telegram.js · freeagent.js · store.js
+        Notifications: Telegram · Pushover · morning email
 ```
 
-Both containers run on `agent-net` Docker network on the NAS.
+Container runs on `agent-net` (shared with other NAS stacks as needed). No runtime dependency on `ob1`.
 
 ### File structure
 
 ```
-/volume1/docker/claude-agent/
+/volume1/docker/property-agent/
 ├── compose.yml
 ├── .env                        # Credentials — never committed
 ├── .env.example
 ├── agent-system-prompt.md      # System prompt for all sessions
-├── properties.txt              # 59 property addresses — never committed
-├── docs/                       # Reference docs — never committed
-│   └── alto-api.pdf
+├── properties.txt              # Property addresses — never committed
+├── data/                       # Local business memory
+│   ├── inbox.json
+│   ├── actions.json
+│   ├── invoices.json
+│   └── telegram-replies.json
 ├── agent/
-│   ├── scheduler.js            # Schedule + watchdog + HTTP control server
-│   ├── telegram.js             # Telegram send/receive utility
+│   ├── scheduler.js            # Schedule + watchdog + HTTP + Telegram poll
+│   ├── store.js                # Local JSON store CLI/library
+│   ├── telegram.js
+│   ├── freeagent.js
 │   ├── package.json
 │   └── Dockerfile
-├── flags/                      # Runtime flag files (PAUSED, KILLED)
-├── logs/                       # Session logs and watchdog state
-└── output/                     # Agent output files
+├── flags/
+├── logs/
+└── output/
 ```
-
-### Containers
-
-| Container | Role |
-|-----------|------|
-| `property-agent` | Runs Claude Code sessions on schedule or trigger |
-
-The watchdog is merged into `scheduler.js` — no separate container.
 
 ---
 
@@ -54,16 +56,15 @@ The watchdog is merged into `scheduler.js` — no separate container.
 
 | Time | Days | Session type |
 |------|------|--------------|
-| 06:00 | Mon–Fri, non-public-holiday | `morning` — property briefing (email) + habits reminder (Telegram) |
-| 12:00 | Mon–Fri, non-public-holiday | `checkin` — mood/energy check-in (Telegram) |
-| 18:00 | Mon–Fri, non-public-holiday | `evening` — evening summary (Telegram) |
-| 08:00–18:00 every 2h | Mon–Fri, non-public-holiday | `property-check` — Alto, Gmail, GCal, Open Brain |
-| Any | Any | `ob-trigger` — fired by OB1 when new items need attention |
+| 06:00 | Mon–Fri, non-public-holiday | `morning` — property briefing (email) + FreeAgent drafts |
+| 08:00–18:00 every 2h | Mon–Fri, non-public-holiday | `property-check` — inbox, GCal, Home Maintenance |
+| Any | Any | `manual` / `http-trigger` — HTTP or Telegram `/trigger` |
 | 18:00–06:00 | Any | Silent |
-| Sat–Sun | Any | Silent unless manually triggered |
-| Public holidays | Any | Silent unless manually triggered |
+| Sat–Sun / public holidays | Any | Silent unless manually triggered |
 
-UK public holidays fetched from `https://www.gov.uk/bank-holidays.json` at startup.
+UK public holidays from `https://www.gov.uk/bank-holidays.json`.
+
+Personal habits / check-ins / evening Life Engine sessions are **not** part of this agent.
 
 ---
 
@@ -78,13 +79,18 @@ curl -X POST http://dnas:3005/trigger \
   -H 'Content-Type: application/json' \
   -d '{"type":"manual","reason":"ad-hoc check"}'
 
+# Add inbox item (work orders)
+curl -X POST http://dnas:3005/inbox \
+  -H 'Content-Type: application/json' \
+  -d '{"property":"59BC","type":"maintenance","status":"open","note":"WO001500: boiler","date":"2026-07-18","order_number":"WO001500"}'
+
 # Resume after watchdog pause
 curl -X POST http://dnas:3005/resume
 ```
 
-Valid types: `morning`, `checkin`, `evening`, `property-check`, `manual`
+Valid trigger types: `morning`, `property-check`, `manual`, `http-trigger`
 
-OB1 can also trigger sessions via the `trigger_property_agent` MCP tool from any connected Claude session.
+Telegram (property bot): `/status`, `/trigger`, `/resume`, `/maintenance`, `/inbox`, `/help`
 
 ---
 
@@ -94,62 +100,40 @@ OB1 can also trigger sessions via the `trigger_property_agent` MCP tool from any
 |-------|-----------|
 | 1 — Hard cap | Anthropic console monthly billing limit |
 | 2 — Per-session | `--max-budget-usd 1.50` per session |
-| 3 — Watchdog | Built into scheduler; monitors session rate and token counts |
-
-### Watchdog thresholds
+| 3 — Watchdog | Built into scheduler; session rate + token counts |
 
 | Metric | Warn | Pause | Kill |
 |--------|------|-------|------|
 | Sessions/hour | 4 | 6 | 8 |
 | Single session tokens | 40k | — | 60k |
 
-**Pause** → writes `PAUSED` flag + Pushover alert. Resets at midnight.
-**Kill** → writes `PAUSED` + `KILLED` flags + emergency Pushover. Requires manual `/resume`.
-
 ---
 
 ## MCP Connections
 
-| MCP | URL | Auth |
-|-----|-----|------|
-| Open Brain | `http://ob1:8000` (local Docker) | `x-brain-key` header |
-| Gmail | `https://gmail.mcp.claude.com/mcp` | claude.ai account MCP |
-| Google Calendar | `https://gcal.mcp.claude.com/mcp` | claude.ai account MCP |
+| MCP | Notes |
+|-----|-------|
+| Google Calendar | OAuth via mounted Claude credentials |
+| Home Maintenance | Supabase Edge Function MCP |
 
-Configured via `docker exec -it property-agent claude mcp list`.
-
-Open Brain runs locally on the NAS — MCP traffic never leaves the network.
-
----
-
-## Life Engine
-
-Integrated into scheduled sessions. Tables defined in `OB1/schemas/life-engine/schema.sql`.
-
-| Feature | Session | Channel |
-|---------|---------|---------|
-| Morning habits reminder | 06:00 morning | Telegram |
-| Mood/energy check-in | 11:00 checkin | Telegram |
-| Evening summary | 18:00 evening | Telegram |
-| Weekly self-improvement | Sunday | Telegram |
-
-Data stored in Supabase (`life_engine_habits`, `life_engine_habit_completions`, `life_engine_checkins`, `life_engine_briefings`, `life_engine_evolution`).
+Open Brain MCP is **not** configured.
 
 ---
 
 ## Action Model
 
 **No approval needed**
-- Reading Gmail, GCal, Open Brain, Alto
-- Sending morning briefing to jramacrae@gmail.com
-- Sending Telegram messages (habits, check-ins, evening summary)
-- Writing to Life Engine Supabase tables
-- Writing notes and task updates to Open Brain
+- Reading GCal, Home Maintenance, Alto
+- Morning briefing email to jramacrae@gmail.com
+- Telegram property ops messages
+- Local store writes (`store.js`)
+- Maintenance calendar events for routed inbox maintenance items
+- FreeAgent draft invoices (morning)
 
-**Requires approval** (queued to `/logs/pending-approvals.json`, Pushover alert sent)
-- Any email other than the morning briefing
-- Creating or modifying calendar entries
-- Any action on an external system not listed above
+**Requires approval** (queued to `/logs/pending-approvals.json`, Pushover alert)
+- Any other outbound email
+- Other calendar creates/modifies
+- Other external writes
 
 ---
 
@@ -160,22 +144,14 @@ Data stored in Supabase (`life_engine_habits`, `life_engine_habit_completions`, 
 | NAS | UGreen DXP4800 Plus |
 | Hostname | `dnas` (Tailscale alias) |
 | Tailscale IP | `100.98.167.107` |
-| Stack root | `/volume1/docker/claude-agent/` |
-| Docker network | `agent-net` (shared with OB1) |
+| Stack root | `/volume1/docker/property-agent/` |
+| Docker network | `agent-net` |
 | Port | 3005 → 3001 (control API) |
 
 ---
 
-## Build Status
+## Setup notes
 
-1. ✅ Anthropic API key + hard spend cap
-2. ✅ Watchdog — merged into scheduler
-3. ✅ property-agent container running
-4. ✅ Telegram connected (OBBot / @John_OBBot)
-5. ✅ Life Engine schema applied to Supabase
-6. ✅ OB1 containerised locally — Open Brain MCP on agent-net
-7. ✅ Telegram capture deployed (Supabase Edge Function)
-8. ✅ trigger_property_agent wired in OB1 MCP
-9. 🔲 Approval UI
-10. 🔲 Alto API integration (credentials pending)
-11. 🔲 OpenRent / browser skills (Phase 2)
+1. Create a **dedicated Property Agent Telegram bot** (do not reuse personal OBBot) and set `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` in `.env`.
+2. `docker compose up -d --build`
+3. Work-order processor should POST to `http://…:3005/inbox` (see mail-reader stack).

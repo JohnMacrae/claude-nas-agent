@@ -3,29 +3,28 @@ services:
   agent:
     build: ./agent
     container_name: property-agent
-    restart: unless-stopped
+    restart: always
     ports:
       - "3005:3001"
     volumes:
       - ./flags:/flags
       - ./logs:/logs
       - ./output:/output
+      - ./data:/data
       - ./properties.txt:/agent/properties.txt:ro
       - ./property-aliases.json:/agent/property-aliases.json:ro
       - ./rates.json:/agent/rates.json:ro
       - /volume1/docker/property_details/JJP_Property_List.md:/agent/JJP_Property_List.md:ro
       - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
-      # Mount host Claude Code credentials so OAuth MCPs (Gmail, GCal) work
+      # Mount host Claude Code credentials so OAuth MCPs (GCal) work
       - /home/john/.claude:/home/agent/.claude:rw
       - /home/john/.claude.json:/home/agent/.claude.json:rw
       - /volume1/docker/property-agent/.claude:/agent/.claude:ro
     environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-      - OPEN_BRAIN_MCP_URL=${OPEN_BRAIN_MCP_URL}
-      - OPEN_BRAIN_MCP_KEY=${OPEN_BRAIN_MCP_KEY}
-      - SUPABASE_PROJECT_URL=${SUPABASE_PROJECT_URL}
-      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
       - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
       - PUSHOVER_USER=${PUSHOVER_USER}
       - FREEAGENT_CLIENT_ID=${FREEAGENT_CLIENT_ID}
@@ -36,7 +35,8 @@ services:
       - FLAGS_DIR=/flags
       - LOGS_DIR=/logs
       - AGENT_DIR=/agent
-      # Watchdog thresholds (merged from watchdog container)
+      - DATA_DIR=/data
+      # Watchdog thresholds
       - WARN_SESSIONS_PER_HOUR=4
       - PAUSE_SESSIONS_PER_HOUR=6
       - KILL_SESSIONS_PER_HOUR=8

@@ -1,8 +1,11 @@
 .env
 flags/
 logs/
-ntfy/data/
+data/
+output/
+ntfy/
 node_modules/
 .DS_Store
 properties.txt
-properties.txt
+*.bak
+agent/node_modules/

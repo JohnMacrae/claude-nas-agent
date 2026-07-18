@@ -14,10 +14,15 @@ RUN useradd -m -u 1002 -s /bin/bash agent
 
 # App
 WORKDIR /agent
-COPY package.json ./
+COPY package*.json ./
+RUN npm install --omit=dev
 COPY scheduler.js ./
+COPY store.js ./
+COPY db.js ./
 COPY telegram.js ./
 COPY freeagent.js ./
+COPY maintenance.js ./
+COPY docs.js ./
 RUN chown -R agent:agent /agent
 
 USER agent

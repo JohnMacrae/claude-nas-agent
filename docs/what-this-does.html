@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Property Agent — What This Does</title>
+  <style>
+    :root {
+      --ink: #1a2228;
+      --muted: #5a6670;
+      --line: #d5dde3;
+      --paper: #f7f5f1;
+      --panel: #ffffff;
+      --accent: #0d6e6e;
+      --accent-soft: #e6f3f3;
+      --warn: #8a4b12;
+      --warn-bg: #f8efe4;
+      --ok: #1f5c3a;
+      --ok-bg: #e8f3ec;
+      --shadow: 0 1px 0 rgba(26, 34, 40, 0.04), 0 12px 32px rgba(26, 34, 40, 0.06);
+      --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+      --font-body: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --font-mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, #dce9e8 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 100% 0%, #efe8dc 0%, transparent 50%),
+        var(--paper);
+      font-family: var(--font-body);
+      line-height: 1.55;
+      font-size: 16px;
+    }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    header {
+      margin-bottom: 2.5rem;
+      padding-bottom: 1.75rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      font-size: 0.75rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+      margin: 0 0 0.65rem;
+    }
+    h1 {
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 5vw, 2.75rem);
+      line-height: 1.15;
+      margin: 0 0 0.75rem;
+      font-weight: 600;
+    }
+    .lede { font-size: 1.125rem; color: var(--muted); max-width: 42rem; margin: 0; }
+    nav.toc { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 1.5rem 0 0; }
+    nav.toc a { color: var(--ink); text-decoration: none; font-size: 0.9rem; border-bottom: 1px solid transparent; }
+    nav.toc a:hover { border-bottom-color: var(--accent); color: var(--accent); }
+    section { margin: 2.25rem 0; }
+    h2 { font-family: var(--font-display); font-size: 1.5rem; margin: 0 0 0.85rem; }
+    h3 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
+    p { margin: 0 0 1rem; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      padding: 1.25rem 1.35rem;
+      margin: 1rem 0;
+    }
+    .flow {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      background: #1a2228;
+      color: #d8e2e8;
+      padding: 1.15rem 1.25rem;
+      overflow-x: auto;
+      margin: 1rem 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+    }
+    th, td {
+      text-align: left;
+      padding: 0.65rem 0.85rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      background: var(--accent-soft);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+    tr:last-child td { border-bottom: none; }
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.86em;
+      background: var(--accent-soft);
+      padding: 0.1em 0.35em;
+    }
+    ul { margin: 0.5rem 0 1rem; padding-left: 1.2rem; }
+    li { margin: 0.35rem 0; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.85rem;
+      margin: 1rem 0;
+    }
+    .tile {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 1rem 1.1rem;
+      box-shadow: var(--shadow);
+    }
+    .tile strong { display: block; font-size: 0.95rem; margin-bottom: 0.35rem; }
+    .tile span { display: block; font-size: 0.88rem; color: var(--muted); }
+    .badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.45rem;
+      margin-right: 0.35rem;
+    }
+    .badge.ok { background: var(--ok-bg); color: var(--ok); }
+    .badge.warn { background: var(--warn-bg); color: var(--warn); }
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line);
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Standalone business agent · Colchester portfolio</p>
+      <h1>Property Agent</h1>
+      <p class="lede">
+        An autonomous Claude agent on John’s NAS for ~59 residential rentals —
+        morning briefings, work-order inbox, Maintenance calendar, FreeAgent drafts,
+        and Telegram ops. Decoupled from Open Brain (OB1) and personal Life Engine.
+      </p>
+      <nav class="toc" aria-label="Contents">
+        <a href="#does">What it does</a>
+        <a href="#how">How it runs</a>
+        <a href="#schedule">Schedule</a>
+        <a href="#pipeline">Work orders</a>
+        <a href="#safety">Safety</a>
+        <a href="#ops">Ops</a>
+      </nav>
+    </header>
+
+    <section id="does">
+      <h2>What it does</h2>
+      <div class="grid">
+        <div class="tile">
+          <strong>Morning briefing</strong>
+          <span>Email property summary + FreeAgent draft invoices from completed jobs.</span>
+        </div>
+        <div class="tile">
+          <strong>Property checks</strong>
+          <span>Every 2 hours: local inbox, calendar, Home Maintenance follow-ups.</span>
+        </div>
+        <div class="tile">
+          <strong>Local memory</strong>
+          <span>JSON under <code>data/</code> — inbox, notes, invoice dedup, Telegram replies.</span>
+        </div>
+        <div class="tile">
+          <strong>Telegram ops</strong>
+          <span>/status, /trigger, job completions (e.g. 59BC-1.5hr). Dedicated property bot.</span>
+        </div>
+      </div>
+      <div class="panel">
+        <span class="badge ok">Standalone</span>
+        No Open Brain MCP, no OB1 trigger dependency, no Life Engine habits/check-ins.
+        Personal productivity stays with OB1 / the life-engine skill.
+      </div>
+    </section>
+
+    <section id="how">
+      <h2>How it runs</h2>
+      <div class="flow">work-order-processor ──POST /inbox──┐
+HTTP / Telegram ──POST /trigger─────┤
+                                   ▼
+property-agent (scheduler.js)
+  └── claude session
+        ├── store.js → /data/*.json
+        ├── Google Calendar + Home Maintenance MCPs
+        └── telegram.js · freeagent.js</div>
+      <table>
+        <thead><tr><th>Path</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>agent/scheduler.js</code></td><td>Schedule, HTTP, Telegram poll, watchdog</td></tr>
+          <tr><td><code>agent/store.js</code></td><td>Local inbox / notes / invoices / replies</td></tr>
+          <tr><td><code>agent-system-prompt.md</code></td><td>Business-only session procedures</td></tr>
+          <tr><td><code>data/</code></td><td>Persistent local memory (volume mount)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="schedule">
+      <h2>Schedule</h2>
+      <table>
+        <thead><tr><th>When</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>06:00 Mon–Fri</td><td><code>morning</code></td><td>Property briefing email + invoicing</td></tr>
+          <tr><td>08:00–18:00 / 2h</td><td><code>property-check</code></td><td>Inbox, GCal, maintenance</td></tr>
+          <tr><td>On demand</td><td><code>manual</code> / <code>http-trigger</code></td><td>HTTP or Telegram <code>/trigger</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="pipeline">
+      <h2>Work-order pipeline</h2>
+      <div class="flow">Rentopia WO email → Gmail
+        ↓
+work-order-processor
+  → POST property-agent /inbox
+  → urgent → POST /trigger
+        ↓
+session → Maintenance calendar + Home Maintenance task</div>
+      <div class="panel">
+        <span class="badge warn">Note</span>
+        Processor Gmail auth has been failing since 2026-05-22 (<code>invalid_grant</code>).
+        <code>/inbox</code> is ready; WOs resume once Gmail is fixed.
+      </div>
+    </section>
+
+    <section id="safety">
+      <h2>Safety</h2>
+      <ul>
+        <li>Anthropic account hard spend cap</li>
+        <li><code>--max-budget-usd 1.50</code> per session</li>
+        <li>Watchdog: sessions/hour and token caps → PAUSED / KILLED flags</li>
+      </ul>
+    </section>
+
+    <section id="ops">
+      <h2>Ops cheat sheet</h2>
+      <div class="panel">
+        <pre style="margin:0;font-family:var(--font-mono);font-size:0.85rem;white-space:pre-wrap;">curl http://dnas:3005/status
+
+curl -X POST http://dnas:3005/trigger \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"manual","reason":"ad-hoc check"}'
+
+curl -X POST http://dnas:3005/inbox \
+  -H 'Content-Type: application/json' \
+  -d '{"property":"59BC","type":"maintenance","status":"open","note":"WO001500: boiler","order_number":"WO001500"}'
+
+curl -X POST http://dnas:3005/resume</pre>
+      </div>
+    </section>
+
+    <footer>
+      Decoupled from OB1 · <code>/volume1/docker/property-agent/docs/what-this-does.html</code>
+    </footer>
+  </div>
+</body>
+</html>

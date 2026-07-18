@@ -1,6 +1,6 @@
-# Status — 15/05/2026
+# Status — 18/07/2026
 
-**State:** Running. Morning, evening, and 2-hour property-check sessions active. Sessions now ~2 min (was ~7 min).
-**Last activity:** Telegram reply pipeline fully fixed — 12 backlogged replies processed and marked done. OAuth check removed (was causing false PAUSED states). sessions.json repaired.
-**Blocker:** Alto MCP unavailable (ongoing since April 2026). execute_sql unavailable for life engine DB writes.
-**Next:** No urgent issues. EICR compliance tasks open for 106CR, 9AM, 198C.
+**State:** Code decoupled from OB1. Local store + `/inbox` + Telegram getUpdates. Life Engine sessions removed.
+**Needs:** Dedicated Property Agent Telegram bot token in `.env` (current token still has OBBot webhook → `getUpdates` 409). Rebuild already done 2026-07-18; `/status` and `/inbox` verified.
+**Blocker:** Work-order processor Gmail auth still `invalid_grant` (since 2026-05-22). Alto MCP still unavailable.
+**Next:** Create property Telegram bot, rebuild, smoke-test `/status` + `/inbox`.

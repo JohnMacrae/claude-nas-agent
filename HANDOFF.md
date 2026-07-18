@@ -1,12 +1,14 @@
 # HANDOFF.md — Property Agent
 
-Last updated: 2026-05-15
+Last updated: 2026-07-18
 
 ---
 
 ## What This Project Is
 
-An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas`, Tailscale IP `100.98.167.107`). It manages 59 residential rental properties and personal productivity. It runs as a subagent of Open Brain (OB1), which can trigger it via the `trigger_property_agent` MCP tool, and also runs on its own schedule.
+An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas`, Tailscale IP `100.98.167.107`). It manages 59 residential rental properties as a **standalone business agent**. Memory is a local JSON store under `data/`. It runs on its own schedule and via HTTP/Telegram trigger.
+
+**Decoupled from OB1 (2026-07-18):** no Open Brain MCP, no Life Engine sessions, no Supabase `thoughts` reads/writes. Personal habits/check-ins live with the life-engine skill / OB1 only.
 
 ---
 
@@ -50,12 +52,16 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 - **Telegram reply processed-marking (May 2026)** — after each successful session, the scheduler PATCHes Supabase to mark all injected replies `processed: true` using the IDs it already holds — no agent SQL or execute_sql needed. Eliminates re-processing backlog that was causing ~7 min sessions; sessions now run in ~2 min.
 - **OAuth auth check removed (May 2026)** — repeated attempts to track token expiry caused false PAUSED states and noisy warnings. The `claudeAiOauth` refresh token handles renewal automatically; no manual intervention or monitoring needed. Check removed entirely.
 - **sessions.json repair (May 2026)** — file was corrupted (leading comma, then NDJSON appended after closing `]`). Rebuilt from recovered data; system prompt updated to use an atomic `node` read-modify-write so agents can't corrupt it again.
+- **Test draft invoices deleted (May 2026)** — the 7 leftover test draft invoices in FreeAgent have been removed.
+- **Backlog invoices generated (May 2026)** — Apr 2025–Apr 2026 invoice backlog created in FreeAgent from the audited Property Calendar events.
 
 ### 🔲 Next
+- Create dedicated Property Agent Telegram bot (do not reuse personal OBBot) and set token in `.env`
+- Rebuild/restart: `docker compose up -d --build`
 - Approval UI (simple web page for approving write actions)
 - Alto API integration (credentials pending)
-- Remove old `claude.ai Open Brain` Supabase connector from claude.ai → Settings → Connectors
 - OpenRent/Rentr browser skills (Phase 2)
+- Optional: remove unused `trigger_property_agent` from OB1 MCP
 
 ---
 
@@ -76,7 +82,7 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 
 | Port | Service |
 |------|---------|
-| 3005 | property-agent control (`GET /status`, `POST /trigger`, `POST /resume`) |
+| 3005 | property-agent control (`GET /status`, `POST /trigger`, `POST /inbox`, `POST /resume`) |
 | 8000 | Portainer — do not use |
 | 8100 | OB1 MCP server (external host port → internal 8000) |
 
@@ -86,56 +92,40 @@ An autonomous Claude Code agent running on John's UGreen DXP4800 Plus NAS (`dnas
 
 ```
 docker network: agent-net
-  ├── ob1            (port 8100:8000) — Open Brain MCP server
-  └── property-agent (port 3005:3001) — Claude Code scheduler
+  └── property-agent (port 3005:3001) — Claude Code scheduler + local store
 ```
 
-Start both:
+(OB1 may still run on the same network for personal use; property-agent does not call it.)
+
 ```bash
 docker network create agent-net   # only needed once
-cd /volume1/docker/OB1 && docker compose up -d
-cd /volume1/docker/property-agent && docker compose up -d
+cd /volume1/docker/property-agent && docker compose up -d --build
 ```
 
 ---
 
 ## MCP Connections (inside property-agent container)
 
-```bash
-docker exec -it property-agent claude mcp list
-```
+Configured in `.claude/settings.json` + host Claude OAuth mounts.
 
-| Name | URL | Status |
-|------|-----|--------|
-| open-brain | http://ob1:8000 | ✅ Local Docker |
-| Gmail | https://gmail.mcp.claude.com/mcp | ✅ claude.ai account MCP |
-| Google Calendar | https://gcal.mcp.claude.com/mcp | ✅ claude.ai account MCP |
-| Meal Planning | Supabase Edge Function | ✅ |
-| Family Calendar | Supabase Edge Function | ✅ |
-| Home Maintenance | Supabase Edge Function | ✅ |
-| Household Knowledge | Supabase Edge Function | ✅ |
-
-Note: `claude.ai Open Brain` (old Supabase Edge Function connector) should still be removed from claude.ai → Settings → Connectors.
+| Name | Status |
+|------|--------|
+| Google Calendar | ✅ via Claude OAuth mount |
+| Home Maintenance | ✅ Supabase Edge Function MCP |
+| Open Brain | ❌ removed |
+| Gmail | ❌ disabled for this agent (marks mail read) |
 
 ---
 
 ## Environment Variables (.env)
 
 ```
-ANTHROPIC_API_KEY=          # Used by watchdog for spend tracking
+ANTHROPIC_API_KEY=
 PUSHOVER_TOKEN=
 PUSHOVER_USER=
 WATCHDOG_POLL_MS=300000
-TELEGRAM_BOT_TOKEN=         # OBBot
+TELEGRAM_BOT_TOKEN=         # Dedicated Property Agent bot (not personal OBBot)
 TELEGRAM_CHAT_ID=725925511
-
-# Open Brain — local container
-OPEN_BRAIN_MCP_URL=http://ob1:8000
-OPEN_BRAIN_MCP_KEY=68d1a7500ae7f9b729b99a6eff48f99a7214eaf8c05eb9cef00ca8ed1c5bf737
-
-# Supabase (for Life Engine tables)
-SUPABASE_PROJECT_URL=https://tvoyukxvvgdambudjdbq.supabase.co
-SUPABASE_SERVICE_KEY=
 
 # FreeAgent
 FREEAGENT_CLIENT_ID=
@@ -165,14 +155,14 @@ setInterval(tick, 60_000)
         ├── isWorkday(now)             // Mon–Fri, not a UK bank holiday
         └── compare hm against fixed values:
               600  → launchSession('morning')
-              1200 → launchSession('checkin')
-              1800 → launchSession('evening')
               even hours 08:00–18:00 → launchSession('property-check')
 ```
 
-Named sessions (morning/checkin/evening) fire regardless of the operating-hours window. `property-check` only fires inside `isOperatingHours` (06:00–18:00 local).
+`morning` fires at 06:00. `property-check` fires on even hours 08:00–16:00 inside operating hours. Personal checkin/evening sessions were removed.
 
 Bank holidays are fetched from `https://www.gov.uk/bank-holidays.json` at startup and refreshed every 24 hours.
+
+Local store: `/data/inbox.json`, `actions.json`, `invoices.json`, `telegram-replies.json`. Telegram inbound via `getUpdates` (not Supabase).
 
 ### TZ requirement
 
@@ -181,12 +171,11 @@ Bank holidays are fetched from `https://www.gov.uk/bank-holidays.json` at startu
 ### HTTP control API
 
 ```
-GET  http://dnas:3005/status          → JSON: running, watchdog state, recent sessions
-POST http://dnas:3005/trigger         → body: {"type":"morning|checkin|evening|property-check|manual","reason":"..."}
+GET  http://dnas:3005/status          → JSON: running, watchdog, inbox counts, recent sessions
+POST http://dnas:3005/trigger         → body: {"type":"morning|property-check|manual|http-trigger","reason":"..."}
+POST http://dnas:3005/inbox           → body: {"property","type","status","note","date","order_number"}
 POST http://dnas:3005/resume          → clears PAUSED + KILLED flags
 ```
-
-OB1 triggers sessions via its `trigger_property_agent` MCP tool → `POST http://property-agent:3001/trigger`.
 
 ---
 
@@ -208,28 +197,11 @@ curl -X POST http://dnas:3005/resume
 
 ---
 
-## OB1 Integration
+## OB1 (legacy / unused by this agent)
 
-OB1 (`ob1` container, port 8100) is the orchestration layer. It exposes a `trigger_property_agent` MCP tool that any Claude session connected to OB1 can call:
+Property Agent no longer depends on OB1. OB1 may still expose `trigger_property_agent` pointing at `POST http://property-agent:3001/trigger` — harmless if unused. Prefer HTTP `/trigger`, `/inbox`, or the property Telegram bot.
 
-```
-trigger_property_agent(type: "property-check", reason: "urgent tenant email")
-→ POST http://property-agent:3001/trigger
-→ async session launched
-```
-
-OB1's `.env` has `PROPERTY_AGENT_URL=http://property-agent:3001`.
-
----
-
-## Capture Channels
-
-| Channel | Method | Destination |
-|---------|--------|-------------|
-| Slack | `ingest-thought` Supabase Edge Function | `thoughts` table |
-| Telegram | `telegram-capture` Supabase Edge Function | `thoughts` table |
-
-Telegram webhook: `https://tvoyukxvvgdambudjdbq.supabase.co/functions/v1/telegram-capture`
+Personal capture (Slack/Telegram → Supabase `thoughts`) remains an OB1/life-engine concern, not this stack.
 
 ---
 
@@ -301,7 +273,7 @@ Replace waste
 
 ### Already-processed guard
 
-The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before invoicing. Re-running the morning session will not duplicate invoices.
+The morning session checks the local store: `node /agent/store.js invoice-check --event-id <id>`. On success it runs `invoice-mark`. Re-running the morning session will not duplicate invoices.
 
 ---
 
@@ -313,12 +285,11 @@ The morning session checks Open Brain for `[GCAL-INVOICED] event_id:<id>` before
 - `~/.bashrc` does not exist on dnas — use `~/.bash_profile`
 - Alto credentials pending — system prompt has placeholder
 - ntfy was trialled and dropped — Pushover only for alerts
-- `life-engine-schema.sql` in this repo is superseded by `OB1/schemas/life-engine/schema.sql`
-- **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. The container won't see the change until restarted: `cd /volume1/docker/property-agent && docker compose restart agent`
-- **MCP OAuth token expiry**: tokens expire around 23 days (shorter than initially assumed). Warning threshold set to 18 days, pause at 23 days. Re-auth: `docker exec -it property-agent claude` then type "authenticate the gmail mcp connection". Update `/flags/mcp-auth-date` with today's date after re-auth.
-- **Gmail work-order token expiry**: the `work-order-processor` uses `/volume1/docker/gmail-mcp/config/jramacrae/token.json`. If the underlying OAuth client credentials are regenerated in Google Cloud Console, the refresh token becomes invalid (`invalid_grant`). Re-auth procedure: run `docker run --rm -v .../jramacrae:/gmail-config -v /tmp/get_token_headless.py:/app/... -p 9090:9090 mail-reader-work-order-processor python get_token_headless.py` with an SSH tunnel, OR use the two-step paste-code approach (generate URL → paste redirect URL back). Scripts at `/volume1/docker/gmail-mcp/get_token.py` and `/tmp/get_token_headless.py`.
-- **OB1 `capture_thought` schema error**: if sessions report `upsert_thought function not found in schema cache`, run `NOTIFY pgrst, 'reload schema';` in the Supabase SQL editor to reload PostgREST's schema cache.
-- **Schrodinger's maintenance tasks**: the session log claiming a task was "closed" does not guarantee `log_maintenance` actually succeeded. Authoritative source of open tasks is `get_upcoming_maintenance` (tasks with `next_due IS NOT NULL`), not OB thoughts. Fixed in system prompt (Apr 2026).
+- Life Engine is **not** part of this agent anymore — personal only (OB1 / life-engine skill)
+- **btrfs inode issue**: editing a volume-mounted file (e.g. `rates.json`) with a tool that creates a new file rather than writing in-place will leave the container on the old inode. Restart: `cd /volume1/docker/property-agent && docker compose restart agent`
+- **Gmail work-order token expiry**: the `work-order-processor` uses `/volume1/docker/gmail-mcp/config/jramacrae/token.json`. If the OAuth client is revoked, refresh fails with `invalid_grant` (broken since 2026-05-22). Processor now POSTs to `/inbox` when Gmail works again.
+- **Telegram bot conflict**: property-agent polls `getUpdates` on `TELEGRAM_BOT_TOKEN`. Use a dedicated property bot so personal OBBot webhook is undisturbed.
+- **Schrodinger's maintenance tasks**: session log claiming a task was "closed" does not guarantee `log_maintenance` succeeded. Authoritative source is `get_upcoming_maintenance`.
 
 ---
 
@@ -340,4 +311,4 @@ Property references accept shortcodes (e.g. `59BC`) or full address (number + st
 
 Start a new conversation with:
 
-"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026, and all WOs since March 2026 (WO001446–WO001488) have been backfilled. Going forward, WO calendar events land in the Maintenance calendar. 7 test draft invoices still need deleting in FreeAgent (see Known Issues). Next priorities: delete test invoices, then generate the backlog of Apr 2025–Apr 2026 invoices, then Approval UI or Alto integration."
+"Continue building the property-agent. Read /volume1/docker/property-agent/HANDOFF.md for full context. FreeAgent invoicing is working end-to-end. Property Calendar has been fully audited and cleaned for Apr 2025–Apr 2026, and all WOs since March 2026 (WO001446–WO001488) have been backfilled. Going forward, WO calendar events land in the Maintenance calendar. The 7 test draft invoices have been deleted and the Apr 2025–Apr 2026 invoice backlog has been generated in FreeAgent. Next priorities: Approval UI or Alto integration."
