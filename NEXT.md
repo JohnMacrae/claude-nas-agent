@@ -48,15 +48,15 @@ Standalone business property stack: local Postgres knowledge store (docs + seman
 4. **OPENROUTER_API_KEY** in `property-docs/.env` for embeddings (lexical search works without it)
 5. **Paperless import** — bridge dry-run then limited import
 6. **Change default Postgres password** in property-docs `.env` if still example value
-7. Merge ingest service into property-docs compose if still only a snippet
+7. ~~Merge ingest service~~ — `property-docs-ingest` running; consume poll verified
+8. Consider rotating OPENROUTER_API_KEY (briefly exposed in a subagent tool dump)
 
 ## Next actions (priority)
 
 1. Dry-run + apply maintenance migration into property-docs DB
-2. Rebuild/restart `property-agent`; smoke-test `/status`, `store.js`, `maintenance.js`, `docs.js`
-3. Ingest sample PDF via consume/; Paperless bridge `--dry-run --limit 20`
-4. New Telegram bot token for property ops
-5. ~~Put property-docs under git~~ — done: https://github.com/JohnMacrae/property-docs
+2. New Telegram bot token for property ops (getUpdates 409 on shared OBBot)
+3. Paperless bridge import at scale (bridge verified; 2-doc smoke done, ~4.7k available)
+4. Optional: rotate OpenRouter key if concerned about the tool-log exposure
 
 ## Key URLs / paths
 
