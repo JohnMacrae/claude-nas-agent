@@ -1,6 +1,6 @@
 # Work Order Pipeline — map & gotchas
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 This documents where the work-order machinery lives and the non-obvious traps
 discovered while debugging WO intake, so future sessions don't re-discover them
@@ -19,8 +19,13 @@ work-order-processor container  (runs every 2h, see its compose)
    • searches Gmail via gmail_client.py using token at /gmail-config/token.json
    • parse_pdf() → property_lines, problem, date, priority
    • addr_to_shortcode() → e.g. 78TS
+   • save Supplier Instructed.pdf → property-agent/output/work_orders/{WOnnn}.pdf
+   • also drop {WOnnn}_Supplier Instructed.pdf → paperless/consume (live)
    • POST http://property-agent:3001/inbox  (local JSON store — not Supabase)
+   • POST /wo-scan → refresh tenant-contacts.json
    • urgent/emergency → also POST /trigger (property-check)
+   • gmail-pdf-processor (02:00) also sends non-statement PDFs to the same live consume
+     (unique names for Supplier Instructed; must mount paperless/consume not paperless-ngx/consume)
         │
         ▼
 property-agent session reads /data/inbox.json → creates calendar event

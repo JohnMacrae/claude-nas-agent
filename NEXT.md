@@ -1,6 +1,6 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: 2026-07-18 18:10
+Last updated: 2026-07-19 15:45 (dcppr)
 
 ## Goal
 
@@ -14,6 +14,8 @@ Standalone business property stack: local Postgres knowledge store (docs + seman
 | `property-docs-db` | Healthy — host **5435** |
 | `property-docs-tika` | Up |
 | `property-docs-ingest` | Up — consume poller |
+| `work-order-processor` | Up — inbox + `output/work_orders` + Paperless consume |
+| `gmail-pdf-processor` | Up — statements local; other PDFs → live Paperless consume |
 
 Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/JohnMacrae/property-docs
 
@@ -35,12 +37,20 @@ Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/John
 - Verified: `POST /command` “number for 24HC” → tenant names + mobiles (~3s) + Telegram
 - Also verified: open tasks at 40WSS
 
-### Tenant contacts from WO PDFs (2026-07-18)
+### Tenant contacts from WO PDFs (2026-07-18 / 19)
 - Source of truth: Rentopia **Supplier Instructed.pdf** → `Contact for Access` + `Mobile:`
 - Store: `/output/work_orders/*.pdf` → cache `/data/tenant-contacts.json` via `wo.js`
-- Agent tool: `wo_lookup` — “number for 24HC” → tenant name(s) + mobile(s), not the street address
-- Verified 24HC from WO001535: Juliet + Chibuzo Nwachukwu numbers
-- **Gap:** processor does not yet auto-save PDFs into `output/work_orders` on intake — drop PDFs there (or fetch) then `wo_scan`
+- Agent tool: `wo_lookup` — “number for 24HC” → tenant name(s) + mobile(s)
+- **Auto-save on intake:** work-order-processor writes `{WOnnn}.pdf` + `POST /wo-scan` (verified WO001536 + scan 2026-07-19)
+- Uncommitted property-agent side: `/wo-scan` in `scheduler.js` (running in container)
+
+### WO → Paperless path fixed (2026-07-19)
+- Root cause: mail-reader mounted **dead** `paperless-ngx/consume`; Paperless watches `paperless/consume`
+- Also: every WO named `Supplier Instructed.pdf` → false “Already in Paperless” skip
+- Fix: remount live consume; unique names `{WOnnn}_Supplier Instructed.pdf`; WO processor also drops to consume
+- Queued local WO001498/1499/1501/1535/1536 → Paperless (ids 4732–4736)
+- Orphaned ~210 files moved to `paperless-stack/paperless-ngx/consume-orphan-20260719` (not auto-imported)
+- Fixed `PAPERLESS_TOKEN` trailing comment in property-docs `.env`
 
 ### Siri Shortcut (manual setup on iPhone)
 1. Shortcut: **Get Contents of URL**
@@ -53,18 +63,23 @@ Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/John
 
 ### Google Calendar auth (2026-07-18)
 - Reused rentr-dashboard OAuth client; fresh `GOOGLE_REFRESH_TOKEN` after browser consent (`calendar.events` scope)
-- Verified: `gcal.js list-events --calendar Maintenance` → ok (e.g. 24HC WO001535, 14FWG WO001536)
+- Verified: `gcal.js list-events --calendar Maintenance` → ok
 - Note: `list-calendars` may 403 on this scope; event ops use hardcoded Maintenance/Property IDs
-- Re-auth if needed: forward `8765`, open http://localhost:8765/admin/google-auth (http not https), copy token into property-agent `.env`
+
+### Paperless → property-docs WO bridge (2026-07-19)
+- Bridge: `--filename-contains Instructed`
+- Imported **8** Supplier Instructed / WO docs (`doc_type=wo`, 8 chunks + embeddings)
+- Shortcodes: 10CC, 48BC×2, 78TS, 8AM, 122NG, 24HC, 14FWG (OCR backfill for filename-only titles)
+- Bridge guesser updated for Rentopia “Property N / street” OCR layout
 
 ## Still open
 
-1. **Auto-save WO PDFs** on work-order-processor intake → `output/work_orders`
-2. **Paperless import at scale** — bridge ready; decide batch size / filters
+1. Triage `consume-orphan-20260719` (~210 files) if anything useful remains
+2. Add iPhone Siri Shortcut(s) for `/command`
 3. **Optional:** fix/delete the 6 unmatched maintenance rows; rotate OpenRouter key; change property-docs Postgres password if still default
 
 ## Next actions (priority)
 
-1. Auto-save Supplier Instructed PDFs into `output/work_orders` on WO intake + `wo_scan`
-2. Add iPhone Siri Shortcut(s) for `/command`
-3. Paperless bridge import (filtered or batched)
+1. Add iPhone Siri Shortcut(s) for `/command`
+2. Optional: triage orphan consume archive
+3. Wider Paperless→property-docs imports later (still ignore statements / JJP LLP unless asked)

@@ -523,6 +523,33 @@ function startHttpServer() {
       return;
     }
 
+    // Refresh tenant-contacts.json from /output/work_orders PDFs (called by WO processor)
+    if (req.method === 'POST' && url.pathname === '/wo-scan') {
+      log('HTTP /wo-scan');
+      const proc = spawn('node', [path.join(AGENT_DIR, 'wo.js'), 'scan'], {
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (d) => { stdout += d; });
+      proc.stderr.on('data', (d) => { stderr += d; });
+      proc.on('close', (code) => {
+        let result;
+        try {
+          result = JSON.parse(stdout.trim() || '{}');
+        } catch {
+          result = { ok: code === 0, raw: stdout.trim(), stderr: stderr.trim() };
+        }
+        if (code !== 0 && result.ok !== false) result.ok = false;
+        if (stderr.trim()) result.stderr = stderr.trim();
+        log(`wo-scan done: scanned=${result.scanned ?? '?'} properties=${result.properties ?? '?'}`);
+        res.writeHead(code === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+      return;
+    }
+
     // Siri Shortcuts / voice commands — sync reply suitable to speak aloud
     if (req.method === 'POST' && url.pathname === '/command') {
       if (!checkCommandAuth(req)) {
