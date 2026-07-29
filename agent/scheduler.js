@@ -11,6 +11,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const store = require('./store');
+const woColour = require('./wo-colour');
 const pending = require('./pending');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
@@ -384,7 +385,18 @@ async function tick() {
   if (hm === lastTick.hm) return;
   lastTick.hm = hm;
 
-  if (hm === 600) { await launchSession('morning'); return; }
+  if (hm === 600) {
+    // Re-colour first so the morning session sees a current calendar. A
+    // failure here must not cost us the session, so it is caught and logged.
+    try {
+      const result = await woColour.run();
+      log(`wo-colour (morning): scanned=${result.scanned} changed=${result.changed} stale=${result.stale}`);
+    } catch (e) {
+      log(`wo-colour (morning) failed: ${e.message}`);
+    }
+    await launchSession('morning');
+    return;
+  }
 
   const operating = isOperatingHours(now);
   if (!operating) return;
@@ -605,6 +617,38 @@ function startHttpServer() {
         res.end(JSON.stringify({ ok: Boolean(row), wo, item: row || null }));
       } catch (e) {
         log(`/wo-detail error for ${wo}: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Re-colour work-order events on the Maintenance calendar. Also runs daily
+    // with the morning session; this is the manual trigger.
+    if (req.method === 'POST' && url.pathname === '/wo-colour') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+        return;
+      }
+
+      try {
+        const result = await woColour.run({ from: parsed.from, dryRun: Boolean(parsed.dry_run) });
+        log(`wo-colour: scanned=${result.scanned} changed=${result.changed} stale=${result.stale}${result.dryRun ? ' (dry run)' : ''}`);
+        res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        log(`wo-colour error: ${e.message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }

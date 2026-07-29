@@ -3,8 +3,14 @@
 //
 //   node gcal.js list-calendars
 //   node gcal.js list-events --calendar Maintenance --from ISO --to ISO
-//   node gcal.js create-event --calendar Maintenance --summary "..." --date YYYY-MM-DD [--description ...]
-//   node gcal.js update-event --calendar Maintenance --event-id ID --description "..."
+//   node gcal.js create-event --calendar Maintenance --summary "..." --date YYYY-MM-DD [--description ...] [--color-id N]
+//   node gcal.js update-event --calendar Maintenance --event-id ID [--description "..."] [--color-id N|default]
+//
+// Event colours are Google's fixed palette, by id:
+//   1 Lavender  2 Sage     3 Grape    4 Flamingo  5 Banana   6 Tangerine
+//   7 Peacock   8 Graphite 9 Blueberry 10 Basil   11 Tomato
+// An event with no colorId uses the calendar's own colour; --color-id default
+// restores that.
 //
 // Auth via env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
 
@@ -167,6 +173,9 @@ async function createEvent(args) {
     start: { date },
     end: { date: endStr },
   };
+  if (args['color-id'] !== undefined && args['color-id'] !== true) {
+    body.colorId = String(args['color-id']);
+  }
   const created = await api('POST', `/calendars/${encodeURIComponent(calendarId)}/events`, { body });
   return {
     ok: true,
@@ -176,6 +185,7 @@ async function createEvent(args) {
       description: created.description || '',
       start: created.start?.date || created.start?.dateTime,
       end: created.end?.date || created.end?.dateTime,
+      colorId: created.colorId || null,
       htmlLink: created.htmlLink,
     },
   };
@@ -188,7 +198,14 @@ async function updateEvent(args) {
   const patch = {};
   if (args.description !== undefined && args.description !== true) patch.description = args.description;
   if (args.summary !== undefined && args.summary !== true) patch.summary = args.summary;
-  if (!Object.keys(patch).length) throw new Error('Provide --description and/or --summary to update');
+  if (args['color-id'] !== undefined && args['color-id'] !== true) {
+    // 'default' clears the override so the event falls back to the calendar
+    // colour. Google wants null, not an empty string, to unset it.
+    patch.colorId = String(args['color-id']) === 'default' ? null : String(args['color-id']);
+  }
+  if (!Object.keys(patch).length) {
+    throw new Error('Provide --description, --summary and/or --color-id to update');
+  }
   const updated = await api(
     'PATCH',
     `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
@@ -202,6 +219,7 @@ async function updateEvent(args) {
       description: updated.description || '',
       start: updated.start?.date || updated.start?.dateTime,
       end: updated.end?.date || updated.end?.dateTime,
+      colorId: updated.colorId || null,
     },
   };
 }

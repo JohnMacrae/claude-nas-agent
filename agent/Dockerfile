@@ -23,6 +23,7 @@ COPY docs.js ./
 COPY gcal.js ./
 COPY pending.js ./
 COPY wo.js ./
+COPY wo-colour.js ./
 
 RUN chown -R agent:agent /agent
 
