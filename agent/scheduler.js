@@ -523,6 +523,58 @@ function startHttpServer() {
       return;
     }
 
+    // Invoice ledger — replaces the Open Brain [GCAL-INVOICED] thoughts the
+    // invoicing agent used to write. Called by property_invoicing over HTTP.
+    if (req.method === 'POST' && (url.pathname === '/invoice-check' || url.pathname === '/invoice-mark')) {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let parsed;
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+        return;
+      }
+
+      const eventId = parsed.event_id || parsed.eventId;
+      if (!eventId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'event_id is required' }));
+        return;
+      }
+
+      // Never let a store failure surface as a clean "not invoiced" — the
+      // caller would read that as permission to bill again.
+      try {
+        if (url.pathname === '/invoice-check') {
+          const row = await store.invoiceCheck(eventId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, invoiced: Boolean(row), row: row || null }));
+          return;
+        }
+
+        const row = await store.invoiceMark(eventId, {
+          acronym: parsed.acronym ?? null,
+          hours: parsed.hours ?? null,
+        });
+        const duplicate = Boolean(row.duplicate);
+        log(`Invoice ledger: ${eventId} ${duplicate ? 'already marked (duplicate)' : 'marked'}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, duplicate, row }));
+      } catch (e) {
+        log(`Invoice ledger error on ${url.pathname} for ${eventId}: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
     // Refresh tenant-contacts.json from /output/work_orders PDFs (called by WO processor)
     if (req.method === 'POST' && url.pathname === '/wo-scan') {
       log('HTTP /wo-scan');

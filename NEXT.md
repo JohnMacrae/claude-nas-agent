@@ -1,8 +1,8 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-07-29** (work-order → invoicing audit; calendar mismatch found and fixed)
+Last updated: **2026-07-29** (Stage A of the pipeline plan done and verified live)
 
-> **Start here:** `BUGS.md` in this folder — 16 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit. Both are new as of 2026-07-29.
+> **Start here:** `BUGS.md` in this folder — 16 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit.
 >
 > **Both are gitignored — local-only, present on the NAS at `/volume1/docker/property-agent/` but never committed.** This repo (`claude-nas-agent`) is **public**; those files and `agent/JJP_Property_List.md` carry portfolio addresses tied to live maintenance issues. Keep it that way — do not commit them, and keep addresses out of `NEXT.md`.
 >
@@ -10,111 +10,91 @@ Last updated: **2026-07-29** (work-order → invoicing audit; calendar mismatch 
 
 ---
 
-# ▼ CURRENT SESSION (2026-07-29)
+# ▼ CURRENT STATE
 
-## Headline
+## Where the work is up to
 
-**No invoices have been raised since 12 May.** Last invoice reference is **`099`** — next is `100`. 38 work orders arrived 1 May–29 Jul; none are matched to an invoice.
+**The approved plan is at `/home/john/.claude/plans/robust-strolling-anchor.md`** — six stages (A–F) that make a work order flow end to end into an enriched, deduplicated FreeAgent draft. Read it before continuing; the reasoning behind each stage is there.
 
-**Root cause (BUG-000, now fixed):** the WO→calendar routine writes to the **Maintenance** calendar; the invoicing agent was reading the **Property** calendar. Both IDs sit side by side in `agent/gcal.js:12-14`. Producer and consumer never met.
+**Stage A is complete and verified live.** Stages B–F are not started.
 
-## Changed this session
+Still true from the audit: **no invoices since 12 May**, last reference `099`, next `100`. 38 work orders arrived 1 May–29 Jul, none matched to an invoice. Root cause was the producer/consumer calendar mismatch (WO routine writes **Maintenance**, invoicing read **Property**) — fixed in `property_invoicing/agent-system-prompt.md`, but **not yet exercised**.
 
-| File | Change | Live? |
-|---|---|---|
-| `property_invoicing/agent-system-prompt.md` | Retargeted Property → **Maintenance** calendar (lines 1, 33, 114); added "never read Property Calendar" guard (it carries Rentr viewings) and stop-don't-fall-back if the calendar is missing | Yes — `:ro` mount, applies next session |
-| `gmail-mcp/reauth.bat` | `python` → `py -3` | n/a |
-| `gmail-mcp/reauth-kk4oyj.bat` | **new** — re-mints kk4oyj against the jramacrae OAuth client | n/a |
-| `property-agent/BUGS.md` | **new** | n/a |
-| `property-agent/WORK_ORDERS_OUTSTANDING.html` | **new** | n/a |
-| `property-agent/tools/{wo_audit.py,fa_list.js}` | **new** — audit scripts preserved from scratch | n/a |
-| `/volume1/docker/CONTAINERS.html` | **new** — NAS-wide stack index (stays at NAS level; non-invoicing findings live in its actions table) | n/a |
+## Stage A — done (`agent/scheduler.js`)
 
-Gmail tokens for `jramacrae` and `kk4oyj` were dead 8+ days — **re-authed and verified**. No code changed, no invoices created, all FreeAgent access read-only.
+`POST /invoice-check` and `POST /invoice-mark`, guarded by the existing `checkCommandAuth` (`X-Command-Token`). These replace the Open Brain `[GCAL-INVOICED]` thoughts. Verified against the running container:
 
-## Which LLM runs what (verified live 2026-07-29)
+| Case | Result |
+|---|---|
+| check unknown event | `{invoiced:false}` |
+| mark | `{duplicate:false}` + row |
+| check again | `{invoiced:true}` |
+| mark again | `{duplicate:true}` |
+| no token | `401` |
 
-| Agent | LLM | How |
-|---|---|---|
-| `property-agent` | **`google/gemini-2.5-flash`** via OpenRouter | `agent/agent-runner.js` custom tool loop. Set in `.env`; defaulted at `agent-runner.js:17`; used at `:657`, `:771`. Confirmed in the running container. |
-| `property_invoicing` | **Claude** (Claude Code default, John's account) | `scheduler.js:194-208` spawns `claude --print`, capped `--max-budget-usd 0.50` |
+The handler has its own try/catch returning **500** on store failure. This is deliberate and load-bearing: without it a DB error returns a clean `{invoiced:false}`, which the invoicing agent reads as permission to bill again. There is no other duplicate guard.
 
-**Three consequences for the prompt work in action 1:**
+Test rows deleted; `invoices` table is back to 0.
 
-1. **property-agent has no Bash and no MCP client.** Per the 2026-07-18 migration below — *"Prompt retargeted to discrete tools (no Bash / no Claude MCP); Claude Code removed from image; `~/.claude` mounts dropped from compose."* Enriching its prompt means working within its registered tools (`gcal_*`, `store_*`, `wo_lookup`, `telegram_send`); it cannot be told to run a script.
-2. **This is why Gmail access must be a direct `gmail_client.py` call, not an MCP** (action 3) — there is no MCP client left in that container to host one.
-3. **Gemini 2.5 Flash is cheap and fast but light.** Fine for routing and lookups; extracting full structured work-order detail from PDF text is a heavier task. If enriched invoices come out thin or inconsistent, suspect the model before the prompt — `AGENT_MODEL` is a one-line env change to test something stronger.
+## Findings that change earlier assumptions
 
-**Also:** `property_invoicing`'s £0.50 per-session budget already killed a run outright (`Error: Exceeded USD budget (0.5)`, 2026-07-16). Asking it to do more per session will require raising that cap.
+1. **`agent/` is baked into the image — it is NOT bind-mounted.** Only `flags`, `logs`, `output`, `data`, and a few json/md files are mounted (`compose.yml:8-18`). Editing `agent/*.js` and restarting does nothing; you must `docker compose build agent && docker compose up -d agent`. This is why `/wo-scan` appeared "uncommitted but running".
 
-## Next actions (priority)
+2. **`freeagent.js --notes` is not a notes field.** `createInvoice` splits it on newlines and runs each line through `parseLineItem` (`agent/freeagent.js:175-179`) to make **invoice line items**. Putting WO prose there would print the tenant's problem as billable/comment lines on a customer invoice. There is no `comments` field on the request body (`:190-197`) — Stage C adds one.
 
-1. **Enrich draft invoices with full WO detail** ← John's next task. Currently the invoice inherits only `--description "<event.summary>"` / `--notes "<event.description>"`, so it gets terse calendar text ("Done 1hr"). Wants WO number, property, problem, priority, dates, work performed.
-   **Blocker:** the detail lives in the WO PDFs but only **6 of 38** survive on disk (BUG-012 — backfill only reaches the 1-day/7-day lookback). Deep-backfill before relying on them.
+3. **`agent-system-prompt.md:77-80` documents behaviour that does not exist** — it claims invoices automatically get `Property:` and `Work order: WO######` in notes. Nothing in `freeagent.js` writes either. **New bug for `BUGS.md`.**
 
-2. **Telegram — give invoicing its own bot.** SBBrain is **not** the conflict. Four stacks, three distinct bots, all posting to chat `725925511`:
+4. **The duplicate guard was already built, just unwired.** `store.invoiceMark` (`agent/store.js:255-272`) already had `ON CONFLICT (event_id) DO NOTHING` returning `{duplicate:true}`. Stage A was plumbing, not new logic.
 
-   | Stack | Token sha256 prefix | |
-   |---|---|---|
-   | `property-agent` | `4271b6cc` | ← **same token** |
-   | `property_invoicing` | `4271b6cc` | ← **same token** |
-   | `sbbrain` | `210f52ba` | independent — leave alone |
-   | `sb_picture` | `c4f4424b` | independent — leave alone |
+5. **`inbox_items` has zero rows, ever** — `min(created_at)` is null and there is no `DELETE` in `store.js`. The WO processor's `POST /inbox` has never persisted. **Diagnose this before building Stage B on it.**
 
-   The 409 `getUpdates` conflict is purely property-agent ↔ property-invoicing. Mint a new bot for invoicing, or unset `TELEGRAM_BOT_TOKEN` there. Decide which agent owns inbound commands.
+6. **Gmail capture is healthy.** The `invalid_grant` in the WO processor log is from 09:45, *before* the re-auth at 10:39. The 11:45 run refreshed credentials cleanly and reported `Work orders captured: 0` — correct, nothing new arrived on a 1-day lookback.
 
-3. **Gmail access for the invoicing agent.**
-   **Blocker:** the `gmail-*` MCP servers in `/home/john/.claude.json` are stdio servers that run `docker run --rm -i`; `property-invoicing` has no Docker socket, so it cannot start them.
-   **Recommended:** bind-mount `gmail-mcp/gmail_client.py` and call it directly, as `mail-reader`, `EICR`, `BL_Audit` and `lead-tracker` already do. No socket exposure, matches existing pattern.
+7. **Only 6 of 38 WO PDFs survive on disk**; property-docs holds 9 `doc_type=wo` documents (text lives in `document_chunks`, there is no `content` column on `documents`). **Gmail is the only complete source** — hence Stage B.
 
-4. **Migrate invoicing off Open Brain** (connectivity proven: `property-invoicing → 172.17.0.1:3005/status` = HTTP 200):
-   1. Add `/invoice-check` + `/invoice-mark` to `agent/scheduler.js` — thin wrappers over existing `store.invoiceCheck()` / `store.invoiceMark()` (`agent/store.js:255-272`), `COMMAND_TOKEN`-guarded like `/command`
-   2. Repoint invoicing prompt steps 2b/6g to curl them — needs `Bash(curl:*)` in `property_invoicing/.claude/settings.local.json` (currently `node|cat|ls` only)
-   3. Drop `open-brain` from `property_invoicing/.claude/settings.json`
+8. **Telegram tokens confirmed byte-identical** between `.env` and `../property_invoicing/.env`. That is the whole 409 conflict. `sbbrain` and `sb_picture` are independent — leave them.
 
-   Fixes BUG-005 + BUG-014 together and makes a backfill safe.
+## Decisions taken this session
 
-5. **Human-only, no code:** triage the 38 work orders (which are chargeable?) — shortlist of 11 with completion notes is in BUG-000. And process **WO001537** + **WO001540** manually; they arrived during the token outage and are in no system at all. WO001540 = *no hot water, **urgent**, 24 Jul* — address in `BUGS.md` (local-only).
+- **WO detail comes from Gmail**, folding `tools/wo_audit.py`'s richer parsing into `mail-reader/work_order_processor.py` — which already has Gmail, the PDF parser, and a `post_inbox_item` call. The invoicing container then pulls detail over HTTP via a new `/wo-detail`. **No `gmail_client.py` mount into invoicing, no Python there, no Docker socket** — simpler than the old action 3 and the same effect.
+- **Scope is forward-looking.** Fix the plumbing so new work orders produce enriched drafts. The 38 historical WOs stay a separate triage task — per `CLAUDE.md`, which are chargeable is John's call, never automated.
+- **Portfolio data stays out of the public repo** (see the banner above).
 
-## Calendar / MCP access — resolved 2026-07-29
+## Next actions
 
-**The invoicing agent's calendar access comes from Claude account-level connectors, not from local MCP config.** `/home/john/.claude.json` (bind-mounted into the container alongside `~/.claude`) records:
+1. **Stage B** — diagnose the empty `inbox_items` first, then fold `wo_audit.py` parsing into the WO processor, widen the inbox schema, add `GET /wo-detail?wo=`. Touches `mail-reader` (second repo) and needs a schema change.
+2. **Stage C** — add `--comments` → `invoice.comments` in `agent/freeagent.js`. Self-contained.
+3. **Stage D** — retarget `property_invoicing/agent-system-prompt.md` steps 2b/2f/2g to curl; add `Bash(curl:*)` to `.claude/settings.local.json`; drop `open-brain` from `.claude/settings.json`; raise `--max-budget-usd` above `0.50` (a run already died at that cap on 2026-07-16).
+4. **Stage E** — split the Telegram bots. Self-contained.
+5. **Stage F** — verification, ending in a **dry run**: inspect the composed `create-invoice` command *before* it fires. No FreeAgent write without explicit approval.
 
-```
-claudeAiMcpEverConnected = ["claude.ai Gmail", "claude.ai Google Calendar",
-  "claude.ai Open Brain", "claude.ai Home Maintenance", "claude.ai sbbrain", …]
-account: jramacrae@gmail.com
-```
+Stages C and E are self-contained if you want quick wins before the large one.
 
-The prompt's tool names (`list_calendars`, `list_events`, `search_thoughts`, `capture_thought`, `log_maintenance`) match the connector tool names exactly. Google Calendar via this connector is **authenticated and working** — it was used successfully this session to read both calendars.
+**Human-only, no code:** triage the 38 work orders, and process **WO001537** + **WO001540** manually — they arrived during the token outage and are in no system at all. WO001540 is *no hot water, **urgent**, 24 Jul*; address in `BUGS.md` (local-only).
 
-**Two corrections to earlier conclusions:**
+## Hygiene — noted, not actioned
 
-1. **The "`list-calendars` may 403" note below does *not* apply here.** That concerns `agent/gcal.js`, which uses property-agent's own `GOOGLE_REFRESH_TOKEN` — a different auth path entirely. The invoicing agent goes through the Claude connector. Step 1 of the prompt is fine as written.
-
-2. **BUG-014/BUG-015 have a second possible cause.** Open Brain and Home Maintenance exist *both* as local MCP entries in `property_invoicing/.claude/settings.json` (with the wrong auth header — verified 401) *and* as claude.ai connectors. In the current context those two connectors expose only `authenticate` / `complete_authentication`, i.e. they are **not authenticated**, whereas Google Calendar exposes its full tool set. So whichever path the container resolves at runtime, both are broken — but the fix differs:
-   - local MCP path → correct the header to `x-brain-key` (proven to return 200)
-   - connector path → re-authenticate the connectors from Claude
-
-   **Not yet determined which path the container actually resolves.** Settle this before spending effort on either fix — a single test run with a trivial `search_thoughts` call would answer it. The migration in action 4 removes the ambiguity entirely by dropping Open Brain from the invoicing path.
+`property_invoicing/.claude/settings.json` has a Supabase **service_role** JWT committed, and that repo's git remote embeds a GitHub PAT in plaintext. The repo is **private**, so this is hygiene rather than an incident, but both should be rotated and moved to env vars. Stage D touches that file anyway.
 
 ## Do not re-litigate
 
 - **Maintenance calendar only** for invoicing. Property Calendar carries Rentr lettings viewings — never invoice those.
-- **The local `ob1` container is not the problem.** `OPEN_BRAIN_MCP_URL=http://ob1:8000` is read by no code, and the container isn't on a reachable network. Starting it changes nothing. The real Open Brain is a **Supabase Edge Function** and it is ACTIVE — the invoicing agent just sends the wrong auth header (`Authorization` instead of `x-brain-key`), so dedup has **never** worked. See BUG-014.
-- **`DATABASE_URL` is correct.** The `ECONNREFUSED 172.18.0.4:5432` is a one-shot startup race (`agent/scheduler.js:837-845`); `Scheduler running (standalone — no OB1)` is an unconditional literal (`:847`), not a degraded-mode signal; the 25–26 July gap was **the weekend** (`isWorkday()`, `:75`). Verified live.
-- **Gmail re-auth:** `get_token.py` run from John's laptop with `py -3`, writing to `W:\gmail-mcp\config\<account>\token.json`. Not the container-based helper.
+- **The local `ob1` container is not the problem.** `OPEN_BRAIN_MCP_URL=http://ob1:8000` is read by no code and the container isn't on a reachable network. The real Open Brain is a Supabase Edge Function; the invoicing agent sends the wrong auth header (`Authorization` instead of `x-brain-key`), so dedup has **never** worked. Stage D removes the dependency entirely rather than fixing it.
+- **`DATABASE_URL` is correct.** The `ECONNREFUSED 172.18.0.4:5432` at boot is a one-shot startup race (`agent/scheduler.js:837-845`); `Scheduler running (standalone — no OB1)` is an unconditional literal, not a degraded-mode signal; weekend gaps are `isWorkday()`.
+- **Gmail re-auth:** `get_token.py` from John's laptop with `py -3`, writing to `W:\gmail-mcp\config\<account>\token.json`. Not the container-based helper.
 - Completion state **is** recorded — free text in Maintenance event descriptions ("Done 1hr", "Completed — 1.5 hours"). Unstructured, but present.
 
-## Key paths (this session)
+## Key paths
 
-- `BUGS.md`, `WORK_ORDERS_OUTSTANDING.html` — this folder
-- `tools/wo_audit.py` — Gmail WO audit, broader than the processor's `from:rentopia` query. Run via `mail-reader-gmail-processor` image with `gmail_client.py` + `work_order_processor.py` mounted, `AUDIT_AFTER=YYYY/MM/DD`, `LOG_PATH=/tmp/audit.log`
-- `tools/fa_list.js` — read-only FreeAgent lister; `docker cp` into `property-agent`, `FA_FROM=YYYY-MM-DD node fa_list.js`. Basis for BUG-006's `list-invoices`
-- `agent/freeagent.js:233` — `create-invoice` only, no list/reconcile
-- `agent/gcal.js:12-14` — both calendar IDs
-- `agent/store.js:255-272`, `agent/agent-runner.js:228,240` — the unused ledger
-- `mail-reader/work_order_processor.py:465` — narrow `from:rentopia` query (BUG-004)
+- **`/home/john/.claude/plans/robust-strolling-anchor.md`** — the approved six-stage plan
+- `BUGS.md`, `WORK_ORDERS_OUTSTANDING.html`, `agent/JJP_Property_List.md` — **local-only, gitignored**
+- `agent/scheduler.js` — endpoints; ledger routes sit just before `/wo-scan`
+- `agent/store.js:255-272` — `invoiceCheck` / `invoiceMark`
+- `agent/freeagent.js:162-215` — `createInvoice`, `parseLineItem`, the missing `comments`
+- `tools/wo_audit.py` — Gmail WO audit; run via `mail-reader-gmail-processor` image, `AUDIT_AFTER=YYYY/MM/DD`
+- `tools/fa_list.js` — read-only FreeAgent lister; `FA_FROM=YYYY-MM-DD node fa_list.js`
+- `mail-reader/work_order_processor.py:305` — `post_inbox_item`; `:465` narrow `from:rentopia` query (BUG-004)
+- `../property_invoicing/agent-system-prompt.md` — steps 2b/2f/2g are the Stage D targets
 - Maintenance calendar: `963dbd01a359d150a2ba10371bf80a30dc448da1100abb14ab750966a9e8a547@group.calendar.google.com`
 - Property calendar: `jj52rrbqum0q362phqmsjp20uc@group.calendar.google.com`
 
