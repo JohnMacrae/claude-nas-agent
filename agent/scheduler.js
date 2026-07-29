@@ -12,6 +12,7 @@ const https = require('https');
 const http = require('http');
 const store = require('./store');
 const woColour = require('./wo-colour');
+const woReport = require('./wo-report');
 const pending = require('./pending');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
@@ -374,6 +375,30 @@ function checkCommandAuth(req) {
 
 // --- Scheduler tick ---
 
+// Tailscale MagicDNS name of the NAS. Overridable, but defaulted so the link
+// works without an .env change.
+const REPORT_BASE_URL = process.env.REPORT_BASE_URL || 'http://dnas.beetal-carp.ts.net:3005';
+
+// One deterministic Telegram each morning with the outstanding count and a link
+// to the report. Scheduler code rather than agent output, so it cannot be
+// forgotten by the model and costs no tokens. Silent when nothing is
+// outstanding — matches "only if there is something needing attention"
+// (agent-system-prompt.md:145).
+async function sendMorningReportLink(result) {
+  if (!TELEGRAM_CHAT_ID) return;
+  const stale = result.stale || 0;
+  const open = result.open || 0;
+  if (!stale && !open) return;
+
+  const parts = [];
+  if (stale) parts.push(`${stale} overdue`);
+  if (open) parts.push(`${open} open`);
+  const text = `Work orders: ${parts.join(', ')}.\n${REPORT_BASE_URL}/wo-report`;
+
+  await sendTelegram(TELEGRAM_CHAT_ID, text);
+  log(`Morning report link sent: ${stale} overdue, ${open} open`);
+}
+
 let lastTick = { hm: -1, propertyCheckHour: -1 };
 
 async function tick() {
@@ -391,6 +416,7 @@ async function tick() {
     try {
       const result = await woColour.run();
       log(`wo-colour (morning): scanned=${result.scanned} changed=${result.changed} stale=${result.stale}`);
+      await sendMorningReportLink(result);
     } catch (e) {
       log(`wo-colour (morning) failed: ${e.message}`);
     }
@@ -619,6 +645,27 @@ function startHttpServer() {
         log(`/wo-detail error for ${wo}: ${e.message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Outstanding work orders as a browsable page — this is what the morning
+    // Telegram links to. Deliberately unauthenticated: read-only, and reachable
+    // only from the LAN or the tailnet. The caller is a browser, so both the
+    // success and failure paths must return HTML, never JSON.
+    if (req.method === 'GET' && url.pathname === '/wo-report') {
+      try {
+        const from = url.searchParams.get('from') || undefined;
+        const html = await woReport.render({ from });
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(html);
+      } catch (e) {
+        log(`/wo-report error: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(woReport.renderError(e.message));
       }
       return;
     }

@@ -85,9 +85,12 @@ function classify(event, today) {
   return { state: 'open', want: COLOUR_OPEN, age };
 }
 
-async function run(opts = {}) {
+// Read-only half: list the calendar and classify. No side effects, so both the
+// colour pass and the HTML report can share it — the completion heuristic, the
+// WO filter and the 14-day boundary must have exactly one definition or the
+// report and the colours will disagree.
+async function scan(opts = {}) {
   const from = opts.from || DEFAULT_FROM;
-  const dryRun = Boolean(opts.dryRun);
   const today = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
 
   // End bound is tomorrow: events dated today must be included, and Google's
@@ -101,22 +104,35 @@ async function run(opts = {}) {
     '--limit', '500',
   ]);
 
+  const items = [];
+  let skipped = 0;
+
+  for (const event of listed.events || []) {
+    if (!WO_RE.test(`${event.summary || ''} ${event.description || ''}`)) {
+      skipped++;
+      continue;
+    }
+    const { state, want, age } = classify(event, today);
+    items.push({ event, state, want, age: age ?? daysOld(event.start, today) });
+  }
+
+  return { from, to, today, scanned: listed.count || 0, skipped, items };
+}
+
+async function run(opts = {}) {
+  const dryRun = Boolean(opts.dryRun);
+  const { from, to, scanned, skipped, items } = await scan(opts);
+
   const summary = {
     ok: true, from, to, dryRun,
-    scanned: listed.count || 0,
-    skipped: 0, complete: 0, open: 0, stale: 0,
+    scanned,
+    skipped, complete: 0, open: 0, stale: 0,
     changed: 0, unchanged: 0,
     errors: [],
     changes: [],
   };
 
-  for (const event of listed.events || []) {
-    if (!WO_RE.test(`${event.summary || ''} ${event.description || ''}`)) {
-      summary.skipped++;
-      continue;
-    }
-
-    const { state, want } = classify(event, today);
+  for (const { event, state, want } of items) {
     summary[state]++;
     if (want === null) continue; // complete — keep whatever colour it has
 
@@ -166,6 +182,10 @@ async function main() {
   }
 }
 
-module.exports = { run, classify, DONE_RE, WO_RE };
+module.exports = {
+  run, scan, classify, daysOld,
+  DONE_RE, WO_RE,
+  COLOUR_OPEN, COLOUR_STALE, STALE_AFTER_DAYS, DEFAULT_FROM,
+};
 
 if (require.main === module) main();
