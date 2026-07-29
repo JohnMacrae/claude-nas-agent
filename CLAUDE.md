@@ -62,7 +62,7 @@ Rentopia email  →  mail-reader/work_order_processor.py  →  POST /inbox (172.
 | Path | What |
 |---|---|
 | `NEXT.md` | Current state + priority actions |
-| `BUGS.md` | 16 bugs, 10 improvements — **gitignored, local-only** |
+| `BUGS.md` | 21 bugs, 10 improvements — **gitignored, local-only** |
 | `WORK_ORDERS_OUTSTANDING.html` | 1 May–29 Jul audit — **gitignored, local-only** |
 | `agent/JJP_Property_List.md` | 60 shortcodes → addresses — **gitignored, local-only** |
 | `WORK_ORDER_PIPELINE.md`, `HANDOFF.md` | Pipeline detail, longer history |

@@ -95,10 +95,19 @@ const jsonStore = {
       created_at: item.created_at || new Date().toISOString(),
       completed_at: null,
       actioned: null,
+      priority: item.priority || null,
+      problem: item.problem || null,
+      description: item.description || null,
+      address: item.address || null,
     };
     items.push(record);
     writeJson(FILES.inbox, items);
     return record;
+  },
+
+  async inboxByOrder(orderNumber) {
+    const items = readJson(FILES.inbox, []);
+    return items.find(i => i.order_number === orderNumber) || null;
   },
 
   async completeInboxItem(id, actioned) {
@@ -205,8 +214,9 @@ const pgStore = {
     const id = item.id || uuid();
     const orderNumber = item.order_number || null;
     const { rows } = await db.query(
-      `INSERT INTO inbox_items (id, property, type, status, note, date, order_number, source, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, now()))
+      `INSERT INTO inbox_items (id, property, type, status, note, date, order_number, source, created_at,
+                               priority, problem, description, address)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, now()), $10, $11, $12, $13)
        ON CONFLICT (order_number) DO NOTHING
        RETURNING *`,
       [
@@ -219,6 +229,10 @@ const pgStore = {
         orderNumber,
         item.source || 'manual',
         item.created_at || null,
+        item.priority || null,
+        item.problem || null,
+        item.description || null,
+        item.address || null,
       ]
     );
     if (rows.length) return rows[0];
@@ -229,6 +243,14 @@ const pgStore = {
     const existing = await db.query(`SELECT * FROM inbox_items WHERE order_number = $1`, [orderNumber]);
     if (existing.rows.length) return { ...existing.rows[0], duplicate: true };
     throw new Error(`addInboxItem: conflict on order_number ${orderNumber} but no matching row found`);
+  },
+
+  async inboxByOrder(orderNumber) {
+    const { rows } = await db.query(
+      `SELECT * FROM inbox_items WHERE order_number = $1`,
+      [orderNumber]
+    );
+    return rows[0] || null;
   },
 
   async completeInboxItem(id, actioned) {
@@ -319,6 +341,9 @@ function listInbox(opts) {
 }
 function addInboxItem(item) {
   return backend.addInboxItem(item);
+}
+function inboxByOrder(orderNumber) {
+  return backend.inboxByOrder(orderNumber);
 }
 function completeInboxItem(id, actioned) {
   return backend.completeInboxItem(id, actioned);
@@ -462,6 +487,7 @@ module.exports = {
   USE_DB,
   listInbox,
   addInboxItem,
+  inboxByOrder,
   completeInboxItem,
   addNote,
   invoiceCheck,

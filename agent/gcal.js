@@ -144,6 +144,9 @@ async function listEvents(args) {
     start: e.start?.date || e.start?.dateTime || null,
     end: e.end?.date || e.end?.dateTime || null,
     allDay: !!e.start?.date,
+    // Google omits colorId entirely when the event uses the calendar's default
+    // colour, so null means "default", not "unset".
+    colorId: e.colorId || null,
     htmlLink: e.htmlLink || null,
   }));
   return { ok: true, calendarId, count: events.length, events };

@@ -500,6 +500,12 @@ function startHttpServer() {
         date: parsed.date,
         order_number: parsed.order_number || null,
         source: parsed.source || 'http',
+        // Full WO detail — parse_pdf already extracts these; older callers
+        // that only send property/note still work, the columns are nullable.
+        priority: parsed.priority || null,
+        problem: parsed.problem || null,
+        description: parsed.description || null,
+        address: parsed.address || null,
       });
       log(`Inbox item added: ${record.id} ${record.property} ${record.order_number || ''} (${record.status})`);
 
@@ -569,6 +575,36 @@ function startHttpServer() {
         res.end(JSON.stringify({ ok: true, duplicate, row }));
       } catch (e) {
         log(`Invoice ledger error on ${url.pathname} for ${eventId}: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Full work-order detail by WO number — read by the invoicing agent to
+    // compose FreeAgent invoice comments (see property_invoicing step 2f).
+    if (req.method === 'GET' && url.pathname === '/wo-detail') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const wo = (url.searchParams.get('wo') || '').trim().toUpperCase();
+      if (!wo) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'wo query parameter is required' }));
+        return;
+      }
+
+      // As with the invoice ledger, a store failure must not read as "no such
+      // work order" — that would silently produce an invoice with no detail.
+      try {
+        const row = await store.inboxByOrder(wo);
+        res.writeHead(row ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: Boolean(row), wo, item: row || null }));
+      } catch (e) {
+        log(`/wo-detail error for ${wo}: ${e.message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }

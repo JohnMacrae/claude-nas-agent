@@ -1,12 +1,10 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-07-29** (Stage A of the pipeline plan done and verified live)
+Last updated: **2026-07-29** (Stages A + B done and verified live; Calendar auth restored)
 
-> **Start here:** `BUGS.md` in this folder — 16 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit.
+> **Start here:** `BUGS.md` in this folder — 21 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit.
 >
 > **Both are gitignored — local-only, present on the NAS at `/volume1/docker/property-agent/` but never committed.** This repo (`claude-nas-agent`) is **public**; those files and `agent/JJP_Property_List.md` carry portfolio addresses tied to live maintenance issues. Keep it that way — do not commit them, and keep addresses out of `NEXT.md`.
->
-> The pre-2026-07-19 history below is retained and still accurate.
 
 ---
 
@@ -14,15 +12,17 @@ Last updated: **2026-07-29** (Stage A of the pipeline plan done and verified liv
 
 ## Where the work is up to
 
-**The approved plan is at `/home/john/.claude/plans/robust-strolling-anchor.md`** — six stages (A–F) that make a work order flow end to end into an enriched, deduplicated FreeAgent draft. Read it before continuing; the reasoning behind each stage is there.
+**The approved plan is at `/home/john/.claude/plans/robust-strolling-anchor.md`** — six stages (A–F). Read it before continuing; the reasoning behind each stage is there.
 
-**Stage A is complete and verified live.** Stages B–F are not started.
+**Stages A and B are complete and verified live. C–F are not started.**
 
-Still true from the audit: **no invoices since 12 May**, last reference `099`, next `100`. 38 work orders arrived 1 May–29 Jul, none matched to an invoice. Root cause was the producer/consumer calendar mismatch (WO routine writes **Maintenance**, invoicing read **Property**) — fixed in `property_invoicing/agent-system-prompt.md`, but **not yet exercised**.
+The pipeline now runs from Gmail to the Maintenance calendar. It has **not** been exercised through to a FreeAgent draft — that is Stages C–F.
+
+Still true: **no invoices since 12 May**, last reference `099`, next `100`.
 
 ## Stage A — done (`agent/scheduler.js`)
 
-`POST /invoice-check` and `POST /invoice-mark`, guarded by the existing `checkCommandAuth` (`X-Command-Token`). These replace the Open Brain `[GCAL-INVOICED]` thoughts. Verified against the running container:
+`POST /invoice-check` and `POST /invoice-mark`, guarded by `checkCommandAuth` (`X-Command-Token`). These replace the Open Brain `[GCAL-INVOICED]` thoughts.
 
 | Case | Result |
 |---|---|
@@ -32,70 +32,78 @@ Still true from the audit: **no invoices since 12 May**, last reference `099`, n
 | mark again | `{duplicate:true}` |
 | no token | `401` |
 
-The handler has its own try/catch returning **500** on store failure. This is deliberate and load-bearing: without it a DB error returns a clean `{invoiced:false}`, which the invoicing agent reads as permission to bill again. There is no other duplicate guard.
+The handler returns **500** on store failure. Deliberate and load-bearing: a clean `{invoiced:false}` on a DB error reads as permission to bill again.
 
-Test rows deleted; `invoices` table is back to 0.
+**Does nothing until Stage D points the invoicing prompt at it.** Key is `event_id`, so it will not catch the same WO invoiced from two different calendar events — which BUG-020 now makes a real possibility.
 
-**This guard does nothing until Stage D points the invoicing prompt at it** — the risk in BUG-008 is unchanged until then. Key is `event_id`, so it will not catch the same WO invoiced from two different calendar events.
+## Stage B — done (three repos)
 
-## Findings that change earlier assumptions
+| Repo | Change |
+|---|---|
+| `property-docs` | `schema/002_wo_detail.sql` — adds `priority`, `problem`, `description`, `address` to `inbox_items`. **Applied.** |
+| `property-agent` | `store.js`: new fields on `addInboxItem` (both backends) + new `inboxByOrder()`. `scheduler.js`: `/inbox` passes detail through; new `GET /wo-detail?wo=`, token-guarded. |
+| `mail-reader` | `work_order_processor.py`: detail passthrough, eight-query search, forwarded copies no longer dropped. |
 
-1. **`agent/` is baked into the image — it is NOT bind-mounted.** Only `flags`, `logs`, `output`, `data`, and a few json/md files are mounted (`compose.yml:8-18`). Editing `agent/*.js` and restarting does nothing; you must `docker compose build agent && docker compose up -d agent`. This is why `/wo-scan` appeared "uncommitted but running".
+Verified: `POST /inbox` with full detail → `201`; `GET /wo-detail?wo=` → `200` (case-insensitive), `401` no token, `404` unknown, `400` no param.
 
-2. **`freeagent.js --notes` is not a notes field.** `createInvoice` splits it on newlines and runs each line through `parseLineItem` (`agent/freeagent.js:175-179`) to make **invoice line items**. Putting WO prose there would print the tenant's problem as billable/comment lines on a customer invoice. There is no `comments` field on the request body (`:190-197`) — Stage C adds one.
+**A 90-day re-run captured 3 work orders and backfilled 34 PDFs**, including **WO001537 and WO001540** — the two BUG-002 said were "in no system at all". Both now have Maintenance events. The physical work on WO001540 (urgent) is **still outstanding**.
 
-3. **`agent-system-prompt.md:77-80` documents behaviour that does not exist** — it claims invoices automatically get `Property:` and `Work order: WO######` in notes. Nothing in `freeagent.js` writes either. Logged as **BUG-017**.
+**Plan correction:** Stage B's first bullet ("fold `wo_audit.py`'s parsing into the processor") was a no-op — `wo_audit.py:9` already imports `parse_pdf` from the processor. One parser, always was. What differed was the *queries*, and that the processor discarded four fields it had already parsed.
 
-4. **The duplicate guard was already built, just unwired.** `store.invoiceMark` (`agent/store.js:255-272`) already had `ON CONFLICT (event_id) DO NOTHING` returning `{duplicate:true}`. Stage A was plumbing, not new logic.
+## Calendar auth — restored 2026-07-29
 
-5. **`inbox_items` has zero rows, ever** — `min(created_at)` is null and there is no `DELETE` in `store.js`, so the "property-agent drains the inbox" theory in **BUG-010** is now ruled out. Rows are never arriving despite 53 successful posts. BUG-010 updated to verified. **Diagnose before building Stage B on it.**
+The `gcal_*` tools had been failing `invalid_grant` since **27 Jul**, so no Maintenance events were being created at all. Root cause: the shared OAuth client was in **Testing** publishing status → Google expires refresh tokens after 7 days.
 
-6. **Gmail capture is healthy.** The `invalid_grant` in the WO processor log is from 09:45, *before* the re-auth at 10:39. The 11:45 run refreshed credentials cleanly and reported `Work orders captured: 0` — correct, nothing new arrived on a 1-day lookback.
+**Fixed by:** publishing the client to production, then re-consenting via rentr-dashboard's page. `property-agent` and `rentr-dashboard` share one OAuth client and the same `calendar.events` scope — one token serves both, and re-consenting one revokes the other's.
 
-7. **Only 6 of 38 WO PDFs survive on disk**; property-docs holds 9 `doc_type=wo` documents (text lives in `document_chunks`, there is no `content` column on `documents`). **Gmail is the only complete source** — hence Stage B.
+**This is now the standard method** — see memory `google-token-refresh-method`. Not the container-based helper.
 
-8. **Telegram tokens confirmed byte-identical** between `.env` and `../property_invoicing/.env`. That is the whole 409 conflict. `sbbrain` and `sb_picture` are independent — leave them.
+## Three defects found by the live run
 
-## Decisions taken this session
+All logged in `BUGS.md`, none fixed:
 
-- **WO detail comes from Gmail**, folding `tools/wo_audit.py`'s richer parsing into `mail-reader/work_order_processor.py` — which already has Gmail, the PDF parser, and a `post_inbox_item` call. The invoicing container then pulls detail over HTTP via a new `/wo-detail`. **No `gmail_client.py` mount into invoicing, no Python there, no Docker socket** — simpler than the old action 3 and the same effect.
-- **Scope is forward-looking.** Fix the plumbing so new work orders produce enriched drafts. The 38 historical WOs stay a separate triage task — per `CLAUDE.md`, which are chargeable is John's call, never automated.
-- **Portfolio data stays out of the public repo** (see the banner above).
+- **BUG-018** — the agent called `store_complete` claiming *"Maintenance task added and calendar event created"* after both tool calls returned `ok:false`. Three WOs closed with a false audit trail. Reopened by hand. **Worst of the three.**
+- **BUG-019** — `maintenance_add` fails every call: sends `"High"`/`"Urgent"`, constraint allows lowercase only. One-line fix.
+- **BUG-020** — no calendar dedup before `gcal_create_event`; it tried to duplicate an existing (cancelled) WO001531 event. Only the dead token prevented it. Double-billing path given BUG-008.
 
 ## Next actions
 
-1. **Stage B** — diagnose the empty `inbox_items` first, then fold `wo_audit.py` parsing into the WO processor, widen the inbox schema, add `GET /wo-detail?wo=`. Touches `mail-reader` (second repo) and needs a schema change.
-2. **Stage C** — add `--comments` → `invoice.comments` in `agent/freeagent.js`. Self-contained.
-3. **Stage D** — retarget `property_invoicing/agent-system-prompt.md` steps 2b/2f/2g to curl; add `Bash(curl:*)` to `.claude/settings.local.json`; drop `open-brain` from `.claude/settings.json`; raise `--max-budget-usd` above `0.50` (a run already died at that cap on 2026-07-16).
-4. **Stage E** — split the Telegram bots. Self-contained.
-5. **Stage F** — verification, ending in a **dry run**: inspect the composed `create-invoice` command *before* it fires. No FreeAgent write without explicit approval.
+1. **BUG-019** — lowercase `priority` at the tool boundary in `agent/agent-runner.js`. One line, unblocks `maintenance_add` entirely.
+2. **BUG-018** — forbid `store_complete` unless the referenced calls returned `ok:true`; make `actioned` name the event id.
+3. **Stage C** — add `--comments` → `invoice.comments` in `agent/freeagent.js`. Self-contained.
+4. **Stage D** — retarget `property_invoicing/agent-system-prompt.md` steps 2b/2f/2g to curl; add `Bash(curl:*)` to `.claude/settings.local.json`; drop `open-brain` from `.claude/settings.json`; raise `--max-budget-usd` above `0.50` (a run died at that cap on 2026-07-16).
+5. **Stage E** — split the Telegram bots. Self-contained.
+6. **Stage F** — verification, ending in a **dry run**: inspect the composed `create-invoice` command *before* it fires. No FreeAgent write without explicit approval.
 
-Stages C and E are self-contained if you want quick wins before the large one.
+**Human-only, no code:** triage the 38 work orders. **Delete the duplicate `30RC - WO001496` event** (two events, both 20 May — BUG-020 in the wild, a double-billing path).
 
-**Human-only, no code:** triage the 38 work orders, and process **WO001537** + **WO001540** manually — they arrived during the token outage and are in no system at all. WO001540 is *no hot water, **urgent**, 24 Jul*; address in `BUGS.md` (local-only).
+**WO001537 and WO001540 are complete** with hours recorded ("Done 2 hrs", "Complete 1hr") — the first real invoice candidates for reference `100`.
 
 ## Hygiene — noted, not actioned (BUG-016)
 
-`property_invoicing/.claude/settings.json` has a Supabase **service_role** JWT and **is tracked in git**, so the key is in history and rotation is required, not optional. That repo's `origin` remote also embeds a GitHub PAT in plaintext in `.git/config`. The repo is **private**, which caps exposure. Both logged under BUG-016; Stage D touches that file anyway.
+`property_invoicing/.claude/settings.json` has a Supabase **service_role** JWT and **is tracked in git**, so the key is in history and rotation is required, not optional. That repo's `origin` also embeds a GitHub PAT in plaintext in `.git/config`. The repo is **private**, which caps exposure. Stage D touches that file anyway.
 
 ## Do not re-litigate
 
 - **Maintenance calendar only** for invoicing. Property Calendar carries Rentr lettings viewings — never invoice those.
-- **The local `ob1` container is not the problem.** `OPEN_BRAIN_MCP_URL=http://ob1:8000` is read by no code and the container isn't on a reachable network. The real Open Brain is a Supabase Edge Function; the invoicing agent sends the wrong auth header (`Authorization` instead of `x-brain-key`), so dedup has **never** worked. Stage D removes the dependency entirely rather than fixing it.
+- **The local `ob1` container is not the problem.** `OPEN_BRAIN_MCP_URL=http://ob1:8000` is read by no code and the container isn't on a reachable network. Stage D removes the dependency rather than fixing it.
 - **`DATABASE_URL` is correct.** The `ECONNREFUSED 172.18.0.4:5432` at boot is a one-shot startup race (`agent/scheduler.js:837-845`); `Scheduler running (standalone — no OB1)` is an unconditional literal, not a degraded-mode signal; weekend gaps are `isWorkday()`.
-- **Gmail re-auth:** `get_token.py` from John's laptop with `py -3`, writing to `W:\gmail-mcp\config\<account>\token.json`. Not the container-based helper.
+- **Gmail re-auth** (distinct from Calendar): `get_token.py` from John's laptop with `py -3`, writing to `W:\gmail-mcp\config\<account>\token.json`.
+- **`agent/` is baked into the image, not bind-mounted.** Editing `agent/*.js` and restarting does nothing — `docker compose build agent && docker compose up -d agent`. Same for `mail-reader`.
 - Completion state **is** recorded — free text in Maintenance event descriptions ("Done 1hr", "Completed — 1.5 hours"). Unstructured, but present.
 
 ## Key paths
 
 - **`/home/john/.claude/plans/robust-strolling-anchor.md`** — the approved six-stage plan
 - `BUGS.md`, `WORK_ORDERS_OUTSTANDING.html`, `agent/JJP_Property_List.md` — **local-only, gitignored**
-- `agent/scheduler.js` — endpoints; ledger routes sit just before `/wo-scan`
-- `agent/store.js:255-272` — `invoiceCheck` / `invoiceMark`
+- `agent/scheduler.js` — endpoints; ledger + `/wo-detail` sit just before `/wo-scan`
+- `agent/store.js` — `invoiceCheck`/`invoiceMark`, `addInboxItem`, `inboxByOrder`
 - `agent/freeagent.js:162-215` — `createInvoice`, `parseLineItem`, the missing `comments`
+- `agent/agent-runner.js` — tool definitions; BUG-019's fix goes here
+- `../property-docs/schema/002_wo_detail.sql` — the Stage B migration
+- `../mail-reader/work_order_processor.py` — intake, queries, `post_inbox_item`
 - `tools/wo_audit.py` — Gmail WO audit; run via `mail-reader-gmail-processor` image, `AUDIT_AFTER=YYYY/MM/DD`
 - `tools/fa_list.js` — read-only FreeAgent lister; `FA_FROM=YYYY-MM-DD node fa_list.js`
-- `mail-reader/work_order_processor.py:305` — `post_inbox_item`; `:465` narrow `from:rentopia` query (BUG-004)
 - `../property_invoicing/agent-system-prompt.md` — steps 2b/2f/2g are the Stage D targets
 - Maintenance calendar: `963dbd01a359d150a2ba10371bf80a30dc448da1100abb14ab750966a9e8a547@group.calendar.google.com`
 - Property calendar: `jj52rrbqum0q362phqmsjp20uc@group.calendar.google.com`
@@ -108,7 +116,7 @@ Stages C and E are self-contained if you want quick wins before the large one.
 
 Standalone business property stack: local Postgres knowledge store (docs + semantic + analytics + property maintenance), decoupled from OB1 / personal Life Engine / Paperless-as-SoT.
 
-## Runtime (now)
+## Runtime
 
 | Container | Status |
 |-----------|--------|
@@ -119,7 +127,7 @@ Standalone business property stack: local Postgres knowledge store (docs + seman
 | `work-order-processor` | Up — inbox + `output/work_orders` + Paperless consume |
 | `gmail-pdf-processor` | Up — statements local; other PDFs → live Paperless consume |
 
-Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/JohnMacrae/property-docs
+Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/JohnMacrae/property-docs · https://github.com/JohnMacrae/mail-reader
 
 ## Done
 
@@ -136,77 +144,45 @@ Repos: https://github.com/JohnMacrae/claude-nas-agent · https://github.com/John
 - New: `gcal.js`, `pending.js` (slim confirm state), `POST /command` (Siri Shortcuts)
 - Prompt retargeted to discrete tools (no Bash / no Claude MCP)
 - Claude Code removed from image; `~/.claude` mounts dropped from compose
-- Verified: `POST /command` “number for 24HC” → tenant names + mobiles (~3s) + Telegram
-- Also verified: open tasks at 40WSS
+- Verified: `POST /command` "number for 24HC" → tenant names + mobiles (~3s) + Telegram
 
 ### Tenant contacts from WO PDFs (2026-07-18 / 19)
 - Source of truth: Rentopia **Supplier Instructed.pdf** → `Contact for Access` + `Mobile:`
 - Store: `/output/work_orders/*.pdf` → cache `/data/tenant-contacts.json` via `wo.js`
-- Agent tool: `wo_lookup` — “number for 24HC” → tenant name(s) + mobile(s)
-- **Auto-save on intake:** work-order-processor writes `{WOnnn}.pdf` + `POST /wo-scan` (verified WO001536 + scan 2026-07-19)
-- Uncommitted property-agent side: `/wo-scan` in `scheduler.js` (running in container)
+- Agent tool: `wo_lookup` — "number for 24HC" → tenant name(s) + mobile(s)
+- **Auto-save on intake:** work-order-processor writes `{WOnnn}.pdf` + `POST /wo-scan`
 
 ### WO → Paperless path fixed (2026-07-19)
 - Root cause: mail-reader mounted **dead** `paperless-ngx/consume`; Paperless watches `paperless/consume`
-- Also: every WO named `Supplier Instructed.pdf` → false “Already in Paperless” skip
+- Also: every WO named `Supplier Instructed.pdf` → false "Already in Paperless" skip
 - Fix: remount live consume; unique names `{WOnnn}_Supplier Instructed.pdf`; WO processor also drops to consume
-- Queued local WO001498/1499/1501/1535/1536 → Paperless (ids 4732–4736)
 - Orphaned ~210 files moved to `paperless-stack/paperless-ngx/consume-orphan-20260719` (not auto-imported)
-- Fixed `PAPERLESS_TOKEN` trailing comment in property-docs `.env`
 
 ### Siri Shortcut (manual setup on iPhone)
 1. Shortcut: **Get Contents of URL**
    - URL: `http://<tailscale-host>:3005/command` (or LAN IP)
    - Method: POST
    - Headers: `Content-Type: application/json`, `X-Command-Token: <COMMAND_TOKEN from .env>`
-   - Body (JSON): `{"text":"<Dictated Text>"}` — use Shortcut “Ask for Input” / Dictate Text
-2. **Show Result** / **Speak Text** on the `reply` field from the JSON response
-3. Example phrases: “number for 24HC”, “open tasks at 40WSS”, “mark 40WSS complete”
+   - Body (JSON): `{"text":"<Dictated Text>"}`
+2. **Show Result** / **Speak Text** on the `reply` field
+3. Example phrases: "number for 24HC", "open tasks at 40WSS", "mark 40WSS complete"
 
-### Google Calendar auth (2026-07-18)
-- Reused rentr-dashboard OAuth client; fresh `GOOGLE_REFRESH_TOKEN` after browser consent (`calendar.events` scope)
-- Verified: `gcal.js list-events --calendar Maintenance` → ok
-- Note: `list-calendars` may 403 on this scope; event ops use hardcoded Maintenance/Property IDs
+### Google Calendar auth (2026-07-18, re-done 2026-07-29)
+- Reused rentr-dashboard OAuth client; `GOOGLE_REFRESH_TOKEN` after browser consent (`calendar.events` scope)
+- `list-calendars` may 403 on this scope; event ops use hardcoded Maintenance/Property IDs
+- See "Calendar auth" above for the 7-day Testing-mode expiry and the standard refresh method
 
 ### Paperless → property-docs WO bridge (2026-07-19)
-- Bridge: `--filename-contains Instructed`
-- Imported **9** Supplier Instructed / WO docs (`doc_type=wo`; +WO001488 / 75FWG)
-- Shortcodes: 10CC, 48BC×2, 78TS, 8AM, 122NG, 24HC, 14FWG, 75FWG
-- Bridge guesser updated for Rentopia “Property N / street” OCR layout
-- Note: list has `Fridaywood` vs OCR `Friday Wood` — shortcode for 75FWG set manually
-
-### Orphan consume triage (2026-07-19) — `consume-orphan-20260719` (~209 left)
-Categorised by filename + `pdftotext` sampling. **Not auto-imported** (per ignore statements / JJP LLP).
-
-| Bucket | ~count | Recommendation |
-|--------|--------|----------------|
-| Rentopia “Statement N for £…” | ~55 | Keep archived — do **not** import (policy) |
-| Service-charge / block accounts (ED, Colne Reach, Maple Court, etc.) | ~15 | Optional later → Paperless `accounts` |
-| Sapphire payment receipts (hash-named) | ~30 | Optional later — block SC receipts |
-| Contractor invoices (Mighty Electrical, Lettings in a box, etc.) | ~28 | Optional later → Paperless |
-| EICR / EIC / EPC | 13 | **Done** — Paperless 4738–4750 + bridged |
-| Tenant refs (`lib-ref-*`) | ~14 | Optional — referencing |
-| Trade receipts (Wickes) | 7 | Optional / expenses |
-| Google Workspace / Microsoft (JJP LLP) | ~6 | Skip (LLP / personal SaaS) |
-| Personal (will, passport scans, train e-receipt, WeddingsByDesign) | ~6 | **Do not** import to property Paperless |
-| Octopus energy | ~10 | Skip unless void utilities asked |
-| **WO001488** `Supplier Instructed.pdf` | 1 | **Done** → Paperless id **4737**, `wo-scan` 75FWG, bridged |
-
-Queued WO + EICR originals under `consume-orphan-20260719/_queued_to_paperless/`. WO also at `output/work_orders/WO001488.pdf`.
+- Bridge: `--filename-contains Instructed`; imported **9** Supplier Instructed / WO docs (`doc_type=wo`)
+- Bridge guesser updated for Rentopia "Property N / street" OCR layout
 
 ### EICR pack import (2026-07-19)
 - 13 files → Paperless **4738–4750** → property-docs (`doc_type=eicr` / `epc`)
-- Properties: 6WC, 179C, 27NPS, 106CR, 11AM, 9AM, 198C, 81FG, 85NG (×3 EICR + EIC + EPC)
-- Manual shortcode fixes where guesser hit bogus `ACRONYM` or Fridaywood/Friday Wood mismatch
+- Manual shortcode fixes where the guesser hit bogus `ACRONYM` or a street-name mismatch
 
 ## Still open
 
 1. Add iPhone Siri Shortcut(s) for `/command`
 2. Optional orphan follow-ups (invoices / SC / refs) — leave rest archived by default
 3. **Optional:** fix/delete the 6 unmatched maintenance rows; rotate OpenRouter key; change property-docs Postgres password if still default
-4. Optional: harden bridge shortcode guesser (reject `ACRONYM`; normalise Fridaywood)
-
-## Next actions (priority)
-
-1. Add iPhone Siri Shortcut(s) for `/command`
-2. Wider Paperless→property-docs imports later (still ignore statements / JJP LLP unless asked)
+4. Optional: harden bridge shortcode guesser (reject `ACRONYM`; normalise street aliases)
