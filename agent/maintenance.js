@@ -137,6 +137,29 @@ async function cmdUpcoming(args) {
   };
 }
 
+// property_maintenance_tasks has
+//   CHECK (priority = ANY (ARRAY['low','medium','high','urgent']))
+// but callers pass Rentopia's own vocabulary straight off the work order —
+// "High", "Urgent", "Routine" — and every insert failed the constraint
+// (BUG-019). Case is only half of it: "Routine" is not an allowed value at
+// all, lowercased or not.
+//
+// Map onto the four the column accepts. Anything unrecognised becomes
+// 'medium' rather than throwing: a maintenance task recorded at the wrong
+// priority is recoverable, one rejected outright is lost.
+const PRIORITY_MAP = {
+  low: 'low', minor: 'low', lowest: 'low',
+  medium: 'medium', normal: 'medium', routine: 'medium', standard: 'medium', moderate: 'medium',
+  high: 'high', important: 'high', major: 'high',
+  urgent: 'urgent', emergency: 'urgent', immediate: 'urgent', critical: 'urgent',
+};
+
+function normalisePriority(raw) {
+  if (!raw || raw === true) return 'medium';
+  const key = String(raw).trim().toLowerCase();
+  return PRIORITY_MAP[key] || 'medium';
+}
+
 async function cmdAdd(args) {
   if (!args.name || args.name === true) throw new Error('--name is required');
 
@@ -160,7 +183,7 @@ async function cmdAdd(args) {
       args.category || null,
       frequencyDays,
       args['next-due'] || null,
-      args.priority || 'medium',
+      normalisePriority(args.priority),
       args.notes || null,
     ]
   );
