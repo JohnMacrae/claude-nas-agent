@@ -36,17 +36,19 @@ The handler has its own try/catch returning **500** on store failure. This is de
 
 Test rows deleted; `invoices` table is back to 0.
 
+**This guard does nothing until Stage D points the invoicing prompt at it** — the risk in BUG-008 is unchanged until then. Key is `event_id`, so it will not catch the same WO invoiced from two different calendar events.
+
 ## Findings that change earlier assumptions
 
 1. **`agent/` is baked into the image — it is NOT bind-mounted.** Only `flags`, `logs`, `output`, `data`, and a few json/md files are mounted (`compose.yml:8-18`). Editing `agent/*.js` and restarting does nothing; you must `docker compose build agent && docker compose up -d agent`. This is why `/wo-scan` appeared "uncommitted but running".
 
 2. **`freeagent.js --notes` is not a notes field.** `createInvoice` splits it on newlines and runs each line through `parseLineItem` (`agent/freeagent.js:175-179`) to make **invoice line items**. Putting WO prose there would print the tenant's problem as billable/comment lines on a customer invoice. There is no `comments` field on the request body (`:190-197`) — Stage C adds one.
 
-3. **`agent-system-prompt.md:77-80` documents behaviour that does not exist** — it claims invoices automatically get `Property:` and `Work order: WO######` in notes. Nothing in `freeagent.js` writes either. **New bug for `BUGS.md`.**
+3. **`agent-system-prompt.md:77-80` documents behaviour that does not exist** — it claims invoices automatically get `Property:` and `Work order: WO######` in notes. Nothing in `freeagent.js` writes either. Logged as **BUG-017**.
 
 4. **The duplicate guard was already built, just unwired.** `store.invoiceMark` (`agent/store.js:255-272`) already had `ON CONFLICT (event_id) DO NOTHING` returning `{duplicate:true}`. Stage A was plumbing, not new logic.
 
-5. **`inbox_items` has zero rows, ever** — `min(created_at)` is null and there is no `DELETE` in `store.js`. The WO processor's `POST /inbox` has never persisted. **Diagnose this before building Stage B on it.**
+5. **`inbox_items` has zero rows, ever** — `min(created_at)` is null and there is no `DELETE` in `store.js`, so the "property-agent drains the inbox" theory in **BUG-010** is now ruled out. Rows are never arriving despite 53 successful posts. BUG-010 updated to verified. **Diagnose before building Stage B on it.**
 
 6. **Gmail capture is healthy.** The `invalid_grant` in the WO processor log is from 09:45, *before* the re-auth at 10:39. The 11:45 run refreshed credentials cleanly and reported `Work orders captured: 0` — correct, nothing new arrived on a 1-day lookback.
 
@@ -72,9 +74,9 @@ Stages C and E are self-contained if you want quick wins before the large one.
 
 **Human-only, no code:** triage the 38 work orders, and process **WO001537** + **WO001540** manually — they arrived during the token outage and are in no system at all. WO001540 is *no hot water, **urgent**, 24 Jul*; address in `BUGS.md` (local-only).
 
-## Hygiene — noted, not actioned
+## Hygiene — noted, not actioned (BUG-016)
 
-`property_invoicing/.claude/settings.json` has a Supabase **service_role** JWT committed, and that repo's git remote embeds a GitHub PAT in plaintext. The repo is **private**, so this is hygiene rather than an incident, but both should be rotated and moved to env vars. Stage D touches that file anyway.
+`property_invoicing/.claude/settings.json` has a Supabase **service_role** JWT and **is tracked in git**, so the key is in history and rotation is required, not optional. That repo's `origin` remote also embeds a GitHub PAT in plaintext in `.git/config`. The repo is **private**, which caps exposure. Both logged under BUG-016; Stage D touches that file anyway.
 
 ## Do not re-litigate
 
