@@ -375,9 +375,15 @@ function checkCommandAuth(req) {
 
 // --- Scheduler tick ---
 
-// Tailscale MagicDNS name of the NAS. Overridable, but defaulted so the link
-// works without an .env change.
-const REPORT_BASE_URL = process.env.REPORT_BASE_URL || 'http://dnas.beetal-carp.ts.net:3005';
+// Tailscale MagicDNS name of the NAS, over the tailnet-only `tailscale serve`
+// proxy so the link opens without a browser security warning.
+//
+// 8448 rather than 3005 because Docker publishes 0.0.0.0:3005, which includes
+// the Tailscale interface — `tailscale serve --https=3005` cannot bind a port
+// Docker already owns. 8448 continues the existing 8444-8447 series and
+// proxies to 127.0.0.1:3005. Tailnet-only, never Funnel: this page is
+// unauthenticated and lists addresses and tenant problems.
+const REPORT_BASE_URL = process.env.REPORT_BASE_URL || 'https://dnas.beetal-carp.ts.net:8448';
 
 // One deterministic Telegram each morning with the outstanding count and a link
 // to the report. Scheduler code rather than agent output, so it cannot be
