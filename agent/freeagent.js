@@ -5,6 +5,7 @@
 // Usage:
 //   node freeagent.js create-invoice --description "122EW - blocked sink" --dated-on "2026-04-24"
 //   node freeagent.js create-invoice --description "..." --dated-on "..." --notes "1 hour labour\n£30 mount" --contact "https://api.freeagent.com/v2/contacts/12345"
+//   node freeagent.js create-invoice --description "122EW - WO001540 - blocked sink" --dated-on "2026-04-24" --comments "122 Eastwood Way, Colchester CO4 9UQ. WO001540 (urgent): no hot water."
 //
 // If --address is supplied and no --contact, a per-property contact is looked up or created
 // automatically using the shortcode from --description.
@@ -159,7 +160,7 @@ function parseLineItem(raw) {
   }];
 }
 
-async function createInvoice({ description, notes, address, datedOn, contact }) {
+async function createInvoice({ description, notes, address, datedOn, contact, comments }) {
   const token = await getAccessToken();
 
   // Resolve contact: explicit → per-property lookup/create → default
@@ -194,6 +195,7 @@ async function createInvoice({ description, notes, address, datedOn, contact }) 
       dated_on:              datedOn,
       payment_terms_in_days: 30,
       invoice_items,
+      ...(comments ? { comments } : {}),
     },
   };
 
@@ -238,10 +240,11 @@ switch (cmd) {
     }
     createInvoice({
       description: args.description,
-      notes:       args.notes   || null,
-      address:     args.address || null,
+      notes:       args.notes    || null,
+      address:     args.address  || null,
       datedOn:     args['dated-on'],
-      contact:     args.contact || null,
+      contact:     args.contact  || null,
+      comments:    args.comments || null,
     }).catch(e => {
       console.error(JSON.stringify({ ok: false, error: e.message }));
       process.exit(1);
@@ -249,6 +252,6 @@ switch (cmd) {
     break;
   }
   default:
-    console.error(JSON.stringify({ ok: false, error: `Unknown command: ${cmd || '(none)'}. Usage: freeagent.js create-invoice --description TEXT --dated-on YYYY-MM-DD [--address ADDR] [--contact URL]` }));
+    console.error(JSON.stringify({ ok: false, error: `Unknown command: ${cmd || '(none)'}. Usage: freeagent.js create-invoice --description TEXT --dated-on YYYY-MM-DD [--address ADDR] [--contact URL] [--comments TEXT]` }));
     process.exit(1);
 }

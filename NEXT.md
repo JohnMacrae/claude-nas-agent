@@ -1,6 +1,6 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-07-29** (Stages A + B done and verified live; Calendar auth restored)
+Last updated: **2026-07-31** (Stage C done; Stages A + B done and verified live; Calendar auth restored)
 
 > **Start here:** `BUGS.md` in this folder — 21 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit.
 >
@@ -14,11 +14,16 @@ Last updated: **2026-07-29** (Stages A + B done and verified live; Calendar auth
 
 **The approved plan is at `/home/john/.claude/plans/robust-strolling-anchor.md`** — six stages (A–F). Read it before continuing; the reasoning behind each stage is there.
 
-**Stages A and B are complete and verified live. C–F are not started.**
+**Stages A, B and (partially) C are complete. D–F are not started.**
 
-The pipeline now runs from Gmail to the Maintenance calendar. It has **not** been exercised through to a FreeAgent draft — that is Stages C–F.
+Invoice `100` was raised 2026-07-30 — first since 12 May — and confirmed the exact gap Stage C targets: no WO# in the description, no job detail anywhere on the invoice (BUG-007, BUG-017). `100` itself was not amended.
 
-Still true: **no invoices since 12 May**, last reference `099`, next `100`.
+## Stage C — done 2026-07-31 (`agent/freeagent.js` + `property_invoicing/agent-system-prompt.md`)
+
+- `freeagent.js`: `--comments` → `invoice.comments` (FreeAgent's real free-text field, confirmed via their docs).
+- Prompt: `--description` now includes `WO######` when the event summary has one; `--comments` composed explicitly with property + WO reference; false "automatic" claim removed; `--notes` documented as billing-only (line-item parsing), not for WO prose.
+
+**Not done — folds into Stage D:** `--comments` is only a one-line reference, not the fuller `/wo-detail` (problem/priority/dates) content; `/invoice-check` + `/invoice-mark` (Stage A) still aren't wired into this prompt, so dedup is still not real.
 
 ## Stage A — done (`agent/scheduler.js`)
 
