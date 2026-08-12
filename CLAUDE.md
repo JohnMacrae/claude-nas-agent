@@ -30,9 +30,11 @@ Consequence: **give it Gmail access by bind-mounting `gmail-mcp/gmail_client.py`
 ```
 Rentopia email  →  mail-reader/work_order_processor.py  →  POST /inbox (172.17.0.1:3005)
                 →  property-agent  →  Maintenance calendar event (+ WO PDF, + Paperless)
-                →  property_invoicing (06:00)  →  reads yesterday's Maintenance events
-                →  freeagent.js create-invoice  →  FreeAgent draft
+                →  property-agent invoice-run (06:00)  →  FreeAgent draft (complete + billable lines)
+                →  invoice-run (≥24h)  →  FreeAgent email to jramacrae@gmail.com
 ```
+
+`property_invoicing` morning create is disabled; do not re-enable without removing property-agent invoice-run.
 
 ## Standing decisions — do not re-litigate
 
@@ -45,10 +47,10 @@ Rentopia email  →  mail-reader/work_order_processor.py  →  POST /inbox (172.
 
 ## Safety rules
 
-- **Never create, amend or delete a FreeAgent invoice without explicit approval.** `freeagent.js create-invoice` writes to live accounts. Read-only inspection is fine — use `tools/fa_list.js`.
-- **There is no duplicate-invoice guard** (BUG-008) and dedup is currently broken (BUG-014). Assume any invoicing run can double-bill until both are fixed.
-- **A work order existing does not mean a charge is due.** Refurb / EPC / EICR-remedial jobs are often quoted separately; some are cancelled. Triage is John's call — present a list, never auto-invoice.
-- Invoice numbering is sequential and **currently at `099`**. Check continuity before creating.
+- **Never create, amend or delete a FreeAgent invoice without explicit approval** outside the automated `invoice-run` path. Manual `freeagent.js create-invoice` writes to live accounts. Read-only inspection is fine — use `tools/fa_list.js`.
+- **Automated invoicing** (`agent/invoice-run.js`, morning + `POST /invoice-run`): drafts a FreeAgent invoice when a Maintenance event description has `done`/`complete`/`completed` at line/sentence start **and** notes parse to ≥1 billable line (hours or £). No category skips. Cancelled jobs are not invoiced. Drafts are emailed to `jramacrae@gmail.com` only after **24 hours** in ledger status `draft`.
+- Dedup is by calendar `event_id` in the `invoices` ledger. Same WO on two events can still double-bill (BUG-020).
+- Invoice numbering is sequential — check continuity before manual creates.
 - Do not change Docker ports, Tailscale, DNS or firewall without explicit authorisation.
 
 ## Conventions
@@ -68,7 +70,8 @@ Rentopia email  →  mail-reader/work_order_processor.py  →  POST /inbox (172.
 | `WORK_ORDER_PIPELINE.md`, `HANDOFF.md` | Pipeline detail, longer history |
 | `agent/agent-runner.js` | Tool loop + tool definitions |
 | `agent/scheduler.js` | Schedule, watchdog, HTTP endpoints (`:416-554`) |
-| `agent/freeagent.js` | `create-invoice` only — no list/reconcile yet |
+| `agent/freeagent.js` | `create-invoice` / `update-invoice` / `send-invoice` / notes parser |
+| `agent/invoice-run.js` | Deterministic complete→draft→email-after-24h run |
 | `agent/gcal.js` | Calendar tools + both calendar IDs |
 | `agent/store.js` | Local store incl. the unused invoice ledger |
 | `tools/wo_audit.py` | Gmail work-order audit (broader than the processor's query) |

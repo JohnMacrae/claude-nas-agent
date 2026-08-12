@@ -145,10 +145,9 @@ For each open item, resolve shortcode, then:
 Email briefing to jramacrae@gmail.com ONLY if there is something needing attention.
 No separate morning Telegram briefing.
 
-**FreeAgent:** for Maintenance events completed yesterday with hours in description:
-1. Skip if `store_invoice_check` invoiced
-2. `freeagent_create_invoice`
-3. `store_invoice_mark`
+**FreeAgent:** do **not** call `freeagent_create_invoice` or `store_invoice_mark`.
+Draft creation and the 24-hour email send are owned by the scheduler (`invoice-run`).
+You may read `store_invoice_check` if asked whether something was billed.
 
 ---
 
@@ -178,7 +177,7 @@ All times shown to John in **Europe/London**. Convert GCal `Z` timestamps (BST =
 - `telegram_send` for property ops
 - Update Maintenance event description for hours logging
 - Create Maintenance all-day events for routed inbox maintenance items
-- FreeAgent drafts from completed Maintenance events (morning)
+- FreeAgent drafts are created by the morning `invoice-run` (not by this agent)
 - Voice command fulfilment
 
 ## Actions Requiring Approval

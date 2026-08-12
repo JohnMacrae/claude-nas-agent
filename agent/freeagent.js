@@ -13,6 +13,7 @@
 // Labour rates are read from /agent/rates.json at runtime.
 
 const fs = require('fs');
+const path = require('path');
 
 const CLIENT_ID       = process.env.FREEAGENT_CLIENT_ID;
 const CLIENT_SECRET   = process.env.FREEAGENT_CLIENT_SECRET;
@@ -24,7 +25,12 @@ const HOUR_UNIT = '(?:hours?|hrs?|h)';
 
 let RATES = { labour: { first_hour_gbp: 70.00, subsequent_hours_gbp: 30.00 }, default: { quantity: 1 } };
 try {
-  RATES = JSON.parse(fs.readFileSync('/agent/rates.json', 'utf8'));
+  const ratesPath = [
+    '/agent/rates.json',
+    path.join(__dirname, '..', 'rates.json'),
+    path.join(__dirname, 'rates.json'),
+  ].find((p) => fs.existsSync(p));
+  if (ratesPath) RATES = JSON.parse(fs.readFileSync(ratesPath, 'utf8'));
 } catch {
   // fall back to defaults if file missing
 }
@@ -122,8 +128,21 @@ function extractHours(text) {
     const label = m[2].replace(/^[\s\-–,]+/, '').trim();
     return { hours: parseFloat(m[1]), label: label || 'Labour' };
   }
+  // "Done 1hr", "Complete 2.5 hours", "Completed — 1.5 hours"
+  m = text.match(new RegExp(
+    `^(?:done|complete[d]?)\\s*[\\-–—:]?\\s*([\\d.]+)\\s*${HOUR_UNIT}\\b`,
+    'i'
+  ));
+  if (m) {
+    return { hours: parseFloat(m[1]), label: 'Labour' };
+  }
   m = text.match(new RegExp(`^(.+?)\\s*[\\-–]\\s*([\\d.]+)\\s*${HOUR_UNIT}\\b\\s*$`, 'i'));
   if (m) {
+    return { hours: parseFloat(m[2]), label: m[1].trim() || 'Labour' };
+  }
+  // "Hob replaced 2hr" (no dash)
+  m = text.match(new RegExp(`^(.+?)\\s+([\\d.]+)\\s*${HOUR_UNIT}\\b\\s*$`, 'i'));
+  if (m && !/^(done|complete[d]?|cancelled)$/i.test(m[1].trim())) {
     return { hours: parseFloat(m[2]), label: m[1].trim() || 'Labour' };
   }
   return null;
@@ -229,14 +248,15 @@ function buildInvoiceItems(segments) {
   return items;
 }
 
-function notesToInvoiceItems(notes, fallbackDescription) {
+function notesToInvoiceItems(notes, fallbackDescription, opts = {}) {
+  const allowMinimum = opts.allowMinimum !== false;
   const lines = notes
     ? normalizeNotesLines(notes)
     : [fallbackDescription];
   const segments = lines.map(parseLineSegment).filter(Boolean);
   const invoice_items = buildInvoiceItems(segments);
 
-  if (!invoice_items.some(i => i.item_type !== 'Comment')) {
+  if (allowMinimum && !invoice_items.some(i => i.item_type !== 'Comment')) {
     invoice_items.unshift({
       description: 'Minimum charge (1 hour)',
       item_type:   'Hours',
@@ -248,7 +268,17 @@ function notesToInvoiceItems(notes, fallbackDescription) {
   return invoice_items;
 }
 
-async function createInvoice({ description, notes, address, datedOn, contact, comments }) {
+function billableItems(invoiceItems) {
+  return (invoiceItems || []).filter(i => i.item_type !== 'Comment');
+}
+
+function netFromItems(invoiceItems) {
+  return billableItems(invoiceItems).reduce((sum, i) => {
+    return sum + parseFloat(i.quantity) * parseFloat(i.price);
+  }, 0);
+}
+
+async function createInvoice({ description, notes, address, datedOn, contact, comments, allowMinimum = true }) {
   requireEnv();
   const token = await getAccessToken();
 
@@ -261,7 +291,10 @@ async function createInvoice({ description, notes, address, datedOn, contact, co
   }
   contactUrl = contactUrl || DEFAULT_CONTACT;
 
-  const invoice_items = notesToInvoiceItems(notes, description);
+  const invoice_items = notesToInvoiceItems(notes, description, { allowMinimum });
+  if (!allowMinimum && billableItems(invoice_items).length === 0) {
+    throw new Error('No billable line items in notes');
+  }
 
   const body = {
     invoice: {
@@ -283,13 +316,77 @@ async function createInvoice({ description, notes, address, datedOn, contact, co
     body: JSON.stringify(body),
   });
 
-  const data = await res.json();
+  const raw = await res.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`Invoice creation failed: ${res.status} ${raw.slice(0, 200)}`);
+  }
   if (!res.ok) {
     throw new Error(`Invoice creation failed: ${res.status} ${JSON.stringify(data)}`);
   }
 
-  const invoiceUrl = data.invoice?.url || data.url;
-  console.log(JSON.stringify({ ok: true, invoice_url: invoiceUrl }));
+  let inv = data.invoice;
+  const invoiceUrl = inv?.url || data.url;
+  if (!inv?.reference || inv?.net_value == null) {
+    const id = String(invoiceUrl).split('/').pop();
+    const getRes = await fetch(`${BASE}/invoices/${id}`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+    });
+    const getData = await getRes.json();
+    if (getRes.ok) inv = getData.invoice;
+  }
+
+  const result = {
+    ok: true,
+    invoice_url: invoiceUrl,
+    reference: inv?.reference || null,
+    net_value: inv?.net_value != null ? String(inv.net_value) : netFromItems(invoice_items).toFixed(2),
+    status: inv?.status || 'Draft',
+  };
+  if (require.main === module) console.log(JSON.stringify(result));
+  return result;
+}
+
+async function sendInvoice(invoiceUrl) {
+  requireEnv();
+  const token = await getAccessToken();
+  const id = invoiceUrl.split('/').pop();
+  const invoiceRes = await fetch(`${BASE}/invoices/${id}`, {
+    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+  });
+  const { invoice } = await invoiceRes.json();
+  if (!invoiceRes.ok) {
+    throw new Error(`Invoice fetch failed: ${invoiceRes.status}`);
+  }
+  const ref = invoice?.reference ?? id;
+
+  const res = await fetch(`${BASE}/invoices/${id}/send_email`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      invoice: {
+        email: {
+          to:      'jramacrae@gmail.com',
+          from:    'jramacrae@gmail.com',
+          subject: `Invoice #${ref} from Rentopia (East Anglia) Ltd`,
+          body:    'Please find your invoice attached.',
+        },
+      },
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`send_email failed: ${res.status} ${JSON.stringify(data)}`);
+  }
+  const result = { ok: true, invoice_url: invoiceUrl, reference: ref };
+  if (require.main === module) console.log(JSON.stringify(result));
+  return result;
 }
 
 async function updateInvoice({ invoiceUrl, notes, description, comments, datedOn }) {
@@ -374,6 +471,11 @@ if (require.main !== module) {
     parseLineSegment,
     buildInvoiceItems,
     notesToInvoiceItems,
+    billableItems,
+    netFromItems,
+    createInvoice,
+    sendInvoice,
+    updateInvoice,
   };
 } else {
 requireEnv();
@@ -394,6 +496,7 @@ switch (cmd) {
       datedOn:     args['dated-on'],
       contact:     args.contact  || null,
       comments:    args.comments || null,
+      allowMinimum: args['no-minimum'] ? false : true,
     }).catch(e => {
       console.error(JSON.stringify({ ok: false, error: e.message }));
       process.exit(1);
@@ -418,22 +521,37 @@ switch (cmd) {
     });
     break;
   }
+  case 'send-invoice': {
+    const args = parseArgs(rest);
+    if (!args['invoice-url']) {
+      console.error(JSON.stringify({ ok: false, error: 'send-invoice requires --invoice-url' }));
+      process.exit(1);
+    }
+    sendInvoice(args['invoice-url']).catch(e => {
+      console.error(JSON.stringify({ ok: false, error: e.message }));
+      process.exit(1);
+    });
+    break;
+  }
   case 'parse-notes': {
     const args = parseArgs(rest);
     if (!args.notes) {
       console.error(JSON.stringify({ ok: false, error: 'parse-notes requires --notes' }));
       process.exit(1);
     }
-    const items = notesToInvoiceItems(args.notes, args.description || 'Labour');
-    const net = items.reduce((sum, i) => {
-      if (i.item_type === 'Comment') return sum;
-      return sum + parseFloat(i.quantity) * parseFloat(i.price);
-    }, 0);
-    console.log(JSON.stringify({ ok: true, net_value: net.toFixed(2), invoice_items: items }, null, 2));
+    const items = notesToInvoiceItems(args.notes, args.description || 'Labour', {
+      allowMinimum: args['no-minimum'] ? false : true,
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      net_value: netFromItems(items).toFixed(2),
+      billable: billableItems(items).length,
+      invoice_items: items,
+    }, null, 2));
     break;
   }
   default:
-    console.error(JSON.stringify({ ok: false, error: `Unknown command: ${cmd || '(none)'}. Usage: freeagent.js create-invoice | update-invoice | parse-notes` }));
+    console.error(JSON.stringify({ ok: false, error: `Unknown command: ${cmd || '(none)'}. Usage: freeagent.js create-invoice | update-invoice | send-invoice | parse-notes` }));
     process.exit(1);
 }
 }

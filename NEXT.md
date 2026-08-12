@@ -1,6 +1,6 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-08-12** (invoice notes parser + first-hour-per-job; draft 102 live-tested; gcal token file + auth alert)
+Last updated: **2026-08-12** (invoice-run live + backlog drafts 102–130; WO001557 calendar backfilled)
 
 > **Start here:** `BUGS.md` in this folder — 21 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit.
 >
@@ -14,24 +14,43 @@ Last updated: **2026-08-12** (invoice notes parser + first-hour-per-job; draft 1
 
 **The approved plan is at `/home/john/.claude/plans/robust-strolling-anchor.md`** — six stages (A–F). Read it before continuing; the reasoning behind each stage is there.
 
-**Stages A, B and C (parser follow-up) are complete. D–F are not started.**
+**Stages A, B and C are complete. Invoice automation now lives in property-agent (`invoice-run`). D–F partially superseded.**
+
+### Invoice-run — done 2026-08-12 (`agent/invoice-run.js`)
+
+Deterministic (no LLM) path owned by property-agent:
+
+1. Scan Maintenance from `2026-05-01` → today
+2. **Draft** when description has `done`/`complete`/`completed` at line/sentence start **and** notes parse to ≥1 billable line (no minimum-charge fallback; no category skips). Cancelled → skip.
+3. Ledger row: `event_id`, `invoice_url`, `reference`, `status=draft`, `drafted_at`, `net_value`
+4. **Email** FreeAgent draft to `jramacrae@gmail.com` when `status=draft` and `drafted_at` ≥ 24h old → `status=sent`
+5. Morning Telegram lists drafted / emailed / outstanding open WOs (+ `/wo-report` link)
+6. Manual: `POST /invoice-run` (token) or `node invoice-run.js [--dry-run|--create-only|--send-only]`
+
+`property_invoicing` 06:00 auto-create is **disabled** (log only) to prevent double-billing. First-hour rate is once per job. Parser also accepts `Done 1hr` / `Label 2hr` (no dash).
+
+**Live backlog (2026-08-12):** FreeAgent drafts **102–130** (29 rows, all with `invoice_url`). None emailed yet — 24h gate. Re-check: create pass is idle; send pass empty until tomorrow morning.
+
+**Schema:** `property-docs/schema/003_invoices_status.sql` (+ runtime `ALTER` in `store.js`).
+
+### WO001557 missing from calendar — fixed 2026-08-12 (BUG-018 in the wild)
+
+Property-check on **10 Aug** got `invalid_grant` on `gcal_create_event` / `gcal_list_events`, then still `store_complete`d the inbox ("attempted to create calendar event"). No Maintenance event → invisible to `/wo-report` and invoice-run.
+
+**Fixed:** created Maintenance event `59BC - WO001557` (dated 10 Aug), reopened inbox item. Now **open** on outstanding report (~2 days old). Physical work still outstanding (urgent boiler/timer + neighbour ceiling water).
 
 ### Invoice notes parser — done 2026-08-12 (`agent/freeagent.js`)
 
-Live test on Maintenance event `40WSS - WO001474` (marked complete with multi-line trailing hours). Blind pass of raw `event.description` as `--notes` previously billed **£70 minimum** because hours only matched at line start.
+Live test on Maintenance event for WO001474 (multi-line trailing hours). Blind pass previously billed **£70 minimum**.
 
 Now:
-- Accepts trailing forms (`Label - 5hr`) and leading (`5hr Label`)
-- Drops noise: standalone `complete`/`done`/`cancelled`, WO intake boilerplate (`WO######: … Status: …`)
-- **First hour is once per job**, not per notes line — sum all labour hours, then 1×£70 + rest×£30
-- CLI: `parse-notes`, `update-invoice` (PUT with `_destroy` on existing items)
-- Dry-run: `node tools/fa_parse_notes_test.js` (expects net £850 for the 27h sample)
+- Trailing / leading hours, `Done 1hr`, `Label 2hr`
+- Drops noise + WO intake boilerplate
+- **First hour once per job**
+- CLI: `parse-notes`, `update-invoice`, `send-invoice`
+- Dry-run: `node tools/fa_parse_notes_test.js`
 
-**Draft invoice `102`** (`https://api.freeagent.com/v2/invoices/93425215`): amended to **£850**, dated 2026-08-12, comments carry property + WO reference. Ledger marked for event id `e9uggr2nf11340p0k6k31cvbp0`.
-
-**Still open for invoicing quality:** morning agent still looks at **yesterday only**; Stage D still not wired to `/invoice-check` + `/invoice-mark`. Parsing logic was mirrored into `property_invoicing/agent/freeagent.js`, but that copy still lacks `--comments` / `update-invoice` / `parse-notes` (Comment line-items for Property/WO instead).
-
-**Deploy note:** `agent/` is baked into the image — rebuild/restart after pull, or `docker cp` will be lost on recreate.
+**Deploy note:** `agent/` is baked into the image — `Dockerfile` must `COPY invoice-run.js`; rebuild after pull.
 
 ## Stage C — done 2026-07-31 (`agent/freeagent.js` + `property_invoicing/agent-system-prompt.md`)
 
@@ -94,14 +113,13 @@ All logged in `BUGS.md`, none fixed:
 
 ## Next actions
 
-1. **Rebuild `property-agent`** so the baked image keeps `freeagent.js` / `gcal.js` / `scheduler.js` (docker cp is not durable).
-2. **Commit/push `property_invoicing` parser mirror** (local `agent/freeagent.js` dirty) and decide whether to finish syncing `--comments` there.
-3. **Stage D** — retarget `property_invoicing/agent-system-prompt.md` steps 2b/2f/2g to curl `/invoice-check` + `/invoice-mark` (+ `/wo-detail`); drop Open Brain dedup; raise `--max-budget-usd` above `0.50`.
-4. **BUG-018** — forbid `store_complete` unless the referenced calls returned `ok:true`; make `actioned` name the event id. (BUG-019 already fixed.)
-5. **Stage E** — split the Telegram bots.
-6. **Stage F** — dry-run: inspect composed `create-invoice` before it fires.
+1. **BUG-018** — forbid `store_complete` unless referenced tool calls returned `ok:true` (WO001557 on 10 Aug is the live proof).
+2. Tomorrow morning: confirm invoice-run **emails** drafts ≥24h old (102–130).
+3. Attend **WO001557** (urgent boiler / neighbour ceiling) — now on calendar + open inbox.
+4. **Stage E** — split the Telegram bots (if still wanted).
+5. Optional: richer `/wo-detail` comments on drafts.
 
-**Human-only, no code:** triage outstanding WOs on `/wo-report`. **Delete the duplicate `30RC - WO001496` event** (BUG-020). Review draft **102** in FreeAgent before sending.
+**Human-only:** review FreeAgent drafts before/as they email; delete duplicate `30RC - WO001496` event (BUG-020).
 
 ## Hygiene — noted, not actioned (BUG-016)
 

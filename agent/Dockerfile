@@ -25,6 +25,7 @@ COPY pending.js ./
 COPY wo.js ./
 COPY wo-colour.js ./
 COPY wo-report.js ./
+COPY invoice-run.js ./
 
 RUN chown -R agent:agent /agent
 

@@ -15,6 +15,7 @@ const woColour = require('./wo-colour');
 const woReport = require('./wo-report');
 const pending = require('./pending');
 const gcal = require('./gcal');
+const invoiceRun = require('./invoice-run');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
 const LOGS_DIR = process.env.LOGS_DIR || '/logs';
@@ -431,6 +432,18 @@ async function sendMorningReportLink(result) {
   log(`Morning report link sent: ${stale} overdue, ${open} open`);
 }
 
+async function sendInvoiceRunReport(result) {
+  if (!TELEGRAM_CHAT_ID) return;
+  const text = invoiceRun.formatTelegramReport(result);
+  if (!text) return;
+  const withLink = `${text}\n${REPORT_BASE_URL}/wo-report`;
+  await sendTelegram(TELEGRAM_CHAT_ID, withLink);
+  log(
+    `Invoice run report: created=${result.counts.created} sent=${result.counts.sent} ` +
+    `outstanding=${result.counts.outstanding} skipped=${result.counts.skipped}`
+  );
+}
+
 let lastTick = { hm: -1, propertyCheckHour: -1 };
 
 async function tick() {
@@ -453,6 +466,17 @@ async function tick() {
     } catch (e) {
       log(`wo-colour (morning) failed: ${e.message}`);
       await maybeAlertGcalAuthFailure(e);
+    }
+    // Deterministic invoice create/send — owns FreeAgent drafts (not the LLM).
+    try {
+      const inv = await invoiceRun.run();
+      log(
+        `invoice-run (morning): created=${inv.counts.created} sent=${inv.counts.sent} ` +
+        `outstanding=${inv.counts.outstanding} skipped=${inv.counts.skipped}`
+      );
+      await sendInvoiceRunReport(inv);
+    } catch (e) {
+      log(`invoice-run (morning) failed: ${e.message}`);
     }
     await launchSession('morning');
     return;
@@ -731,6 +755,53 @@ function startHttpServer() {
       } catch (e) {
         log(`wo-colour error: ${e.message}`);
         await maybeAlertGcalAuthFailure(e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Deterministic FreeAgent draft create + 24h email send. Morning schedule
+    // also runs this; HTTP is for manual / one-shot backfill.
+    if (req.method === 'POST' && url.pathname === '/invoice-run') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+        return;
+      }
+
+      try {
+        const result = await invoiceRun.run({
+          dryRun: Boolean(parsed.dry_run),
+          createOnly: Boolean(parsed.create_only),
+          sendOnly: Boolean(parsed.send_only),
+          from: parsed.from || undefined,
+          sendAfterHours: parsed.send_after_hours != null
+            ? Number(parsed.send_after_hours)
+            : 24,
+        });
+        log(
+          `invoice-run: created=${result.counts.created} sent=${result.counts.sent} ` +
+          `outstanding=${result.counts.outstanding} skipped=${result.counts.skipped}` +
+          `${result.dryRun ? ' (dry run)' : ''}`
+        );
+        if (!parsed.dry_run && !parsed.silent) {
+          await sendInvoiceRunReport(result);
+        }
+        res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        log(`invoice-run error: ${e.message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
