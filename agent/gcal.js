@@ -13,6 +13,13 @@
 // restores that.
 //
 // Auth via env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
+// Refresh token resolution (first match wins):
+//   1. GOOGLE_REFRESH_TOKEN_FILE or /data/google-refresh-token (written by
+//      rentr-dashboard on /admin/google-auth — single source of truth)
+//   2. GOOGLE_REFRESH_TOKEN env (legacy fallback)
+
+const fs = require('fs');
+const path = require('path');
 
 const KNOWN = {
   Maintenance: '963dbd01a359d150a2ba10371bf80a30dc448da1100abb14ab750966a9e8a547@group.calendar.google.com',
@@ -56,13 +63,33 @@ function resolveCalendarId(nameOrId) {
   return nameOrId;
 }
 
+function resolveRefreshToken() {
+  const tokenFile = process.env.GOOGLE_REFRESH_TOKEN_FILE
+    || path.join(process.env.DATA_DIR || '/data', 'google-refresh-token');
+  try {
+    if (fs.existsSync(tokenFile)) {
+      const fromFile = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (fromFile) return fromFile;
+    }
+  } catch {
+    // fall through to env
+  }
+  return process.env.GOOGLE_REFRESH_TOKEN || '';
+}
+
+function isInvalidGrantError(err) {
+  const msg = String(err?.message || err || '');
+  return msg.includes('invalid_grant');
+}
+
 async function getAccessToken() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+  const refreshToken = resolveRefreshToken();
   if (!clientId || !clientSecret || !refreshToken) {
     throw new Error(
-      'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN must be set'
+      'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and a refresh token must be set ' +
+      '(env GOOGLE_REFRESH_TOKEN or /data/google-refresh-token from rentr-dashboard re-auth)'
     );
   }
   if (cachedToken && Date.now() < cachedExpires) return cachedToken;
@@ -80,7 +107,11 @@ async function getAccessToken() {
   });
   const data = await res.json();
   if (!res.ok || !data.access_token) {
-    throw new Error(`Google token refresh failed: ${JSON.stringify(data)}`);
+    const hint = data.error === 'invalid_grant'
+      ? ' Re-authorise at rentr-dashboard /admin/google-auth, then run tools/sync-gcal-token.sh. ' +
+        'If this recurs every ~7 days, publish the OAuth client to Production in Google Cloud Console.'
+      : '';
+    throw new Error(`Google token refresh failed: ${JSON.stringify(data)}.${hint}`);
   }
   cachedToken = data.access_token;
   cachedExpires = Date.now() + (Number(data.expires_in || 3500) - 60) * 1000;
@@ -249,11 +280,23 @@ async function main() {
   console.log(JSON.stringify(result));
 }
 
+async function checkAuth() {
+  try {
+    await getAccessToken();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message, invalidGrant: isInvalidGrantError(e) };
+  }
+}
+
 module.exports = {
   listCalendars,
   listEvents,
   createEvent,
   updateEvent,
+  checkAuth,
+  resolveRefreshToken,
+  isInvalidGrantError,
   resolveCalendarId,
   KNOWN,
 };

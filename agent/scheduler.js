@@ -14,6 +14,7 @@ const store = require('./store');
 const woColour = require('./wo-colour');
 const woReport = require('./wo-report');
 const pending = require('./pending');
+const gcal = require('./gcal');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
 const LOGS_DIR = process.env.LOGS_DIR || '/logs';
@@ -139,6 +140,31 @@ function sendPushover(title, message, priority) {
     req.write(payload);
     req.end();
   });
+}
+
+const GCAL_AUTH_FLAG = 'gcal-auth-dead';
+
+async function maybeAlertGcalAuthFailure(err) {
+  const msg = String(err?.message || err || '');
+  if (!gcal.isInvalidGrantError({ message: msg })) return;
+  if (flagExists(GCAL_AUTH_FLAG)) return;
+  setFlag(GCAL_AUTH_FLAG);
+  await sendPushover(
+    'Property Agent — Calendar auth dead',
+    'Google Calendar refresh token expired or revoked (invalid_grant). ' +
+    'Re-authorise at rentr-dashboard /admin/google-auth, then run tools/sync-gcal-token.sh. ' +
+    'If this recurs every ~7 days, publish the OAuth client to Production in Google Cloud Console.',
+    1
+  );
+}
+
+async function clearGcalAuthAlertIfHealthy() {
+  const status = await gcal.checkAuth();
+  if (status.ok && flagExists(GCAL_AUTH_FLAG)) {
+    clearFlag(GCAL_AUTH_FLAG);
+    log('Google Calendar auth restored — cleared gcal-auth-dead flag');
+  }
+  return status;
 }
 
 // --- Session log ---
@@ -422,9 +448,11 @@ async function tick() {
     try {
       const result = await woColour.run();
       log(`wo-colour (morning): scanned=${result.scanned} changed=${result.changed} stale=${result.stale}`);
+      await clearGcalAuthAlertIfHealthy();
       await sendMorningReportLink(result);
     } catch (e) {
       log(`wo-colour (morning) failed: ${e.message}`);
+      await maybeAlertGcalAuthFailure(e);
     }
     await launchSession('morning');
     return;
@@ -702,6 +730,7 @@ function startHttpServer() {
         res.end(JSON.stringify(result));
       } catch (e) {
         log(`wo-colour error: ${e.message}`);
+        await maybeAlertGcalAuthFailure(e);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
@@ -1027,6 +1056,19 @@ async function main() {
     }
   } catch (e) {
     log(`Startup pending-reply check failed: ${e.message}`);
+  }
+
+  try {
+    const gcalStatus = await gcal.checkAuth();
+    if (gcalStatus.ok) {
+      log('Google Calendar auth OK');
+      if (flagExists(GCAL_AUTH_FLAG)) clearFlag(GCAL_AUTH_FLAG);
+    } else {
+      log(`Google Calendar auth failed: ${gcalStatus.error}`);
+      await maybeAlertGcalAuthFailure(new Error(gcalStatus.error));
+    }
+  } catch (e) {
+    log(`Startup gcal auth check failed: ${e.message}`);
   }
 
   log('Scheduler running (standalone — no OB1)');

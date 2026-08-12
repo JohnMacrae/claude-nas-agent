@@ -1,6 +1,6 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-07-31** (Stage C done; Stages A + B done and verified live; Calendar auth restored)
+Last updated: **2026-08-12** (invoice notes parser + first-hour-per-job; draft 102 live-tested; gcal token file + auth alert)
 
 > **Start here:** `BUGS.md` in this folder — 21 bugs + 10 improvements covering work-order management and invoicing. `WORK_ORDERS_OUTSTANDING.html` is the 1 May–29 Jul audit.
 >
@@ -14,9 +14,24 @@ Last updated: **2026-07-31** (Stage C done; Stages A + B done and verified live;
 
 **The approved plan is at `/home/john/.claude/plans/robust-strolling-anchor.md`** — six stages (A–F). Read it before continuing; the reasoning behind each stage is there.
 
-**Stages A, B and (partially) C are complete. D–F are not started.**
+**Stages A, B and C (parser follow-up) are complete. D–F are not started.**
 
-Invoice `100` was raised 2026-07-30 — first since 12 May — and confirmed the exact gap Stage C targets: no WO# in the description, no job detail anywhere on the invoice (BUG-007, BUG-017). `100` itself was not amended.
+### Invoice notes parser — done 2026-08-12 (`agent/freeagent.js`)
+
+Live test on Maintenance event `40WSS - WO001474` (marked complete with multi-line trailing hours). Blind pass of raw `event.description` as `--notes` previously billed **£70 minimum** because hours only matched at line start.
+
+Now:
+- Accepts trailing forms (`Label - 5hr`) and leading (`5hr Label`)
+- Drops noise: standalone `complete`/`done`/`cancelled`, WO intake boilerplate (`WO######: … Status: …`)
+- **First hour is once per job**, not per notes line — sum all labour hours, then 1×£70 + rest×£30
+- CLI: `parse-notes`, `update-invoice` (PUT with `_destroy` on existing items)
+- Dry-run: `node tools/fa_parse_notes_test.js` (expects net £850 for the 27h sample)
+
+**Draft invoice `102`** (`https://api.freeagent.com/v2/invoices/93425215`): amended to **£850**, dated 2026-08-12, comments carry property + WO reference. Ledger marked for event id `e9uggr2nf11340p0k6k31cvbp0`.
+
+**Still open for invoicing quality:** morning agent still looks at **yesterday only**; Stage D still not wired to `/invoice-check` + `/invoice-mark`. Parsing logic was mirrored into `property_invoicing/agent/freeagent.js`, but that copy still lacks `--comments` / `update-invoice` / `parse-notes` (Comment line-items for Property/WO instead).
+
+**Deploy note:** `agent/` is baked into the image — rebuild/restart after pull, or `docker cp` will be lost on recreate.
 
 ## Stage C — done 2026-07-31 (`agent/freeagent.js` + `property_invoicing/agent-system-prompt.md`)
 
@@ -24,6 +39,12 @@ Invoice `100` was raised 2026-07-30 — first since 12 May — and confirmed the
 - Prompt: `--description` now includes `WO######` when the event summary has one; `--comments` composed explicitly with property + WO reference; false "automatic" claim removed; `--notes` documented as billing-only (line-item parsing), not for WO prose.
 
 **Not done — folds into Stage D:** `--comments` is only a one-line reference, not the fuller `/wo-detail` (problem/priority/dates) content; `/invoice-check` + `/invoice-mark` (Stage A) still aren't wired into this prompt, so dedup is still not real.
+
+### Calendar token file + auth alert — done 2026-08-12
+
+- `gcal.js` reads refresh token from `/data/google-refresh-token` (rentr-dashboard re-auth) before env fallback
+- `tools/sync-gcal-token.sh` copies token from rentr-dashboard DB → token file + `.env`, then rebuilds agent
+- Scheduler Pushover-alerts once on `invalid_grant` (`gcal-auth-dead` flag), clears when healthy again
 
 ## Stage A — done (`agent/scheduler.js`)
 
@@ -73,16 +94,14 @@ All logged in `BUGS.md`, none fixed:
 
 ## Next actions
 
-1. **BUG-019** — lowercase `priority` at the tool boundary in `agent/agent-runner.js`. One line, unblocks `maintenance_add` entirely.
-2. **BUG-018** — forbid `store_complete` unless the referenced calls returned `ok:true`; make `actioned` name the event id.
-3. **Stage C** — add `--comments` → `invoice.comments` in `agent/freeagent.js`. Self-contained.
-4. **Stage D** — retarget `property_invoicing/agent-system-prompt.md` steps 2b/2f/2g to curl; add `Bash(curl:*)` to `.claude/settings.local.json`; drop `open-brain` from `.claude/settings.json`; raise `--max-budget-usd` above `0.50` (a run died at that cap on 2026-07-16).
-5. **Stage E** — split the Telegram bots. Self-contained.
-6. **Stage F** — verification, ending in a **dry run**: inspect the composed `create-invoice` command *before* it fires. No FreeAgent write without explicit approval.
+1. **Rebuild `property-agent`** so the baked image keeps `freeagent.js` / `gcal.js` / `scheduler.js` (docker cp is not durable).
+2. **Commit/push `property_invoicing` parser mirror** (local `agent/freeagent.js` dirty) and decide whether to finish syncing `--comments` there.
+3. **Stage D** — retarget `property_invoicing/agent-system-prompt.md` steps 2b/2f/2g to curl `/invoice-check` + `/invoice-mark` (+ `/wo-detail`); drop Open Brain dedup; raise `--max-budget-usd` above `0.50`.
+4. **BUG-018** — forbid `store_complete` unless the referenced calls returned `ok:true`; make `actioned` name the event id. (BUG-019 already fixed.)
+5. **Stage E** — split the Telegram bots.
+6. **Stage F** — dry-run: inspect composed `create-invoice` before it fires.
 
-**Human-only, no code:** triage the 38 work orders. **Delete the duplicate `30RC - WO001496` event** (two events, both 20 May — BUG-020 in the wild, a double-billing path).
-
-**WO001537 and WO001540 are complete** with hours recorded ("Done 2 hrs", "Complete 1hr") — the first real invoice candidates for reference `100`.
+**Human-only, no code:** triage outstanding WOs on `/wo-report`. **Delete the duplicate `30RC - WO001496` event** (BUG-020). Review draft **102** in FreeAgent before sending.
 
 ## Hygiene — noted, not actioned (BUG-016)
 
