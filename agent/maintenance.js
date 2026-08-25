@@ -67,7 +67,31 @@ const SCHEMA_SQL = `
     ON property_maintenance_tasks(property_shortcode, next_due);
   CREATE INDEX IF NOT EXISTS idx_property_maintenance_logs_task_completed
     ON property_maintenance_logs(task_id, completed_at DESC);
+
+  -- One-shot logs clear next_due; recurring roll it forward. (Older trigger
+  -- left next_due unchanged on one-shots → permanent "overdue" ghosts.)
+  CREATE OR REPLACE FUNCTION property_maintenance_apply_log()
+  RETURNS trigger AS $$
+  BEGIN
+      UPDATE property_maintenance_tasks
+      SET last_completed = NEW.completed_at,
+          next_due = CASE
+                         WHEN frequency_days IS NOT NULL
+                         THEN NEW.completed_at + make_interval(days => frequency_days)
+                         ELSE NULL
+                     END,
+          updated_at = now()
+      WHERE id = NEW.task_id;
+      RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
 `;
+
+// Rentopia/Alto work orders are tracked on the Maintenance calendar + /wo-report.
+// Dual-writing them into this table created a permanent overdue backlog the
+// morning session kept alarming on. Reject WO-shaped one-shots here so a
+// prompt slip cannot reopen that gap.
+const WO_REF_RE = /\bWO\d{6}\b/i;
 
 let schemaEnsured = false;
 async function ensureSchema() {
@@ -171,6 +195,15 @@ async function cmdAdd(args) {
     throw new Error('--frequency-days must be a number');
   }
 
+  const name = String(args.name);
+  const notes = args.notes && args.notes !== true ? String(args.notes) : '';
+  if (!frequencyDays && (WO_REF_RE.test(name) || WO_REF_RE.test(notes))) {
+    throw new Error(
+      'WO tasks are tracked on the Maintenance calendar (gcal_create_event), ' +
+      'not property_maintenance_tasks. Do not maintenance_add for Rentopia/Alto work orders.'
+    );
+  }
+
   const { rows } = await db.query(
     `INSERT INTO property_maintenance_tasks
        (id, property_shortcode, name, category, frequency_days, next_due, priority, notes)
@@ -179,12 +212,12 @@ async function cmdAdd(args) {
     [
       id,
       args.property || null,
-      args.name,
+      name,
       args.category || null,
       frequencyDays,
       args['next-due'] || null,
       normalisePriority(args.priority),
-      args.notes || null,
+      notes || null,
     ]
   );
 
@@ -226,16 +259,21 @@ async function cmdLog(args) {
   if (!taskRows.length) throw new Error(`task not found: ${taskId}`);
   let task = taskRows[0];
 
-  // A DB trigger (if present) may have already updated last_completed/next_due
-  // as a side effect of the log insert. Only patch it here if that didn't happen.
-  const triggerApplied =
-    task.last_completed &&
-    new Date(task.last_completed).getTime() === new Date(completedAt).getTime();
+  // Trigger should already have set last_completed / next_due. Re-assert the
+  // one-shot close (next_due NULL) so an old buggy trigger cannot leave ghosts.
+  const nextDue = task.frequency_days
+    ? new Date(new Date(completedAt).getTime() + task.frequency_days * 86400000).toISOString()
+    : null;
+  const needsPatch =
+    !task.last_completed ||
+    new Date(task.last_completed).getTime() !== new Date(completedAt).getTime() ||
+    (task.frequency_days == null && task.next_due != null) ||
+    (task.frequency_days != null && (
+      !task.next_due ||
+      Math.abs(new Date(task.next_due).getTime() - new Date(nextDue).getTime()) > 1000
+    ));
 
-  if (!triggerApplied) {
-    const nextDue = task.frequency_days
-      ? new Date(new Date(completedAt).getTime() + task.frequency_days * 86400000).toISOString()
-      : null;
+  if (needsPatch) {
     const { rows: updated } = await db.query(
       `UPDATE property_maintenance_tasks
        SET last_completed = $2, next_due = $3, updated_at = now()

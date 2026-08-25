@@ -1,15 +1,26 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-08-25** (agent revived — see below)
+Last updated: **2026-08-25** (agent revived + model fallback added — see below)
 
 ## Agent was down 2026-08-23 → 2026-08-25 — fixed
 
 Two independent breakages, both now resolved:
 
-- **LLM backend**: an in-progress, uncommitted change on `fix/wo-paperless-bridge-handoff` (`agent/agent-runner.js`, `compose.yml`, `.env.example`) switched `LLM_BACKEND` to `ollama` pointing at `shack.beetal-carp.ts.net:11434` (Ollama on shack, over Tailscale) — an attempt to move off OpenRouter. Port 11434 was unreachable (closed/filtered) from the NAS host itself, so every scheduled session (morning, property-check, manual) failed instantly with `fetch failed`. Reverting to OpenRouter then surfaced a second problem: the OpenRouter key had hit its **monthly spend limit** (403) — this is *why* the Ollama migration was started. Fixed by setting `AGENT_MODEL=stealth/ox-alpha` in `.env` (a free/stealth OpenRouter model, sidesteps the capped key). Verified with a live manual trigger. `.env.example` updated to default to `openrouter` + `stealth/ox-alpha`'s sibling `google/gemini-2.5-flash` isn't restored as default until the OpenRouter key limit is actually raised — check `openrouter.ai/workspaces/default/keys` before assuming it's fixed for good.
+- **LLM backend**: an in-progress change switched `LLM_BACKEND` to `ollama` pointing at `shack.beetal-carp.ts.net:11434` (Ollama on shack, over Tailscale) — an attempt to move off OpenRouter. Port 11434 was unreachable (closed/filtered) from the NAS host itself, so every scheduled session (morning, property-check, manual) failed instantly with `fetch failed`. Reverting to OpenRouter then surfaced a second problem: the key (`sk-or-v1-335d...`) had a **$3/month spend limit configured on the key itself** (separate from account credit balance — check via `GET openrouter.ai/api/v1/key`), and it was spent — that's *why* the Ollama migration was started. John raised the key's limit; verified working against a paid model (`~deepseek/deepseek-v4-flash-latest`) same day.
 - **Google Calendar**: `invalid_grant` again (recurring ~7-day expiry). Re-authorised via the SSH-tunnel method (`ssh -L 8765:localhost:8765 <nas>` → `http://localhost:8765/admin/google-auth`), then `tools/sync-gcal-token.sh`. Auth confirmed OK, `gcal-auth-dead` flag cleared. **Still not confirmed** whether the OAuth client's publishing status is actually "In production" in Google Cloud Console — if it's slipped back to Testing, this will recur every 7 days. Worth checking.
 
-**Still open on this branch:** the uncommitted Ollama-backend diff (`agent/agent-runner.js`, `compose.yml`, `agent/maintenance.js`, `agent/scheduler.js`, `agent-system-prompt.md`) is untouched — not committed, not reverted. Decide whether to finish wiring Ollama (once shack's service is actually reachable on 11434) or drop it now that OpenRouter is working again via the free model.
+**Committed** (`bd0e9c0` + follow-up on `fix/wo-paperless-bridge-handoff`): Ollama-backend support (dormant unless `LLM_BACKEND=ollama`), the morning `telegram_send` guard, WO-vs-`maintenance_add` dedup fixes, and defaults in `compose.yml`/`.env.example` flipped back to `openrouter` (was defaulting to `ollama`, which is how the outage happened — a fresh checkout would have inherited the same break).
+
+### Model fallback — added 2026-08-25 (`agent/agent-runner.js`)
+
+`AGENT_MODEL_FALLBACK` (comma-separated, optional) is tried in order if `AGENT_MODEL`'s request fails for any reason (model pulled/renamed, key limit, provider outage). Runner logs which model actually served each request; `steps`/result JSON reports the model that succeeded, not just the configured primary.
+
+Current live `.env` (not committed — gitignored):
+```
+AGENT_MODEL=~deepseek/deepseek-v4-flash-latest
+AGENT_MODEL_FALLBACK=google/gemini-2.5-flash,minimax/minimax-m2.7:free,nvidia/nemotron-3-super-120b-a12b:free
+```
+Last two fallbacks are free-tier OpenRouter models (confirmed working, no spend-limit exposure) — genuine last-resort if both paid models are unavailable. Verified end-to-end by forcing a bogus primary model and confirming the runner logs the fallthrough correctly.
 
 ---
 

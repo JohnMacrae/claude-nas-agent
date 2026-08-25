@@ -338,7 +338,7 @@ async function launchSession(trigger, context = null, options = {}) {
     '--prompt', prompt,
   ];
 
-  log(`Launching ${trigger} session via OpenRouter runner`);
+  log(`Launching ${trigger} session via ${process.env.LLM_BACKEND || 'openrouter'} runner`);
   sessionRunning = true;
 
   const logPath = path.join(LOGS_DIR, `session-${trigger}-${Date.now()}.log`);
@@ -524,8 +524,11 @@ function startHttpServer() {
         watchdogStatus,
         paused: flagExists('PAUSED'),
         killed: flagExists('KILLED'),
-        runner: 'openrouter',
-        model: process.env.AGENT_MODEL || 'google/gemini-2.5-flash',
+        runner: process.env.LLM_BACKEND || 'openrouter',
+        model: process.env.AGENT_MODEL || (
+          (process.env.LLM_BACKEND || 'openrouter') === 'ollama' ? 'qwen3' : 'google/gemini-2.5-flash'
+        ),
+        ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://shack.beetal-carp.ts.net:11434',
         openInbox: openInbox.length,
         pendingTelegramReplies: pendingTelegramReplies.length,
         pendingConfirm: pending.getPending(),

@@ -127,8 +127,10 @@ Scheduler marks injected replies processed after a successful session exit.
 If `OPEN INBOX` is present (or after listing via `store_list_inbox` on scheduled sessions):
 
 For each open item, resolve shortcode, then:
-- `maintenance` → `maintenance_add` (or log if resolved); create all-day Maintenance calendar event
-  `{ACRONYM} - {order_number}` (dedup via `gcal_list_events` ±7 days); urgent → Telegram 🔴 alert
+- `maintenance` **with a Rentopia/Alto `WO######`** → create all-day Maintenance calendar event
+  `{ACRONYM} - {order_number}` (dedup via `gcal_list_events` ±7 days); urgent → Telegram 🔴 alert.
+  Do **not** call `maintenance_add` for work orders — calendar + `/wo-report` is the WO ledger.
+- `maintenance` **without a WO number** (ad-hoc / Telegram-raised) → `maintenance_add` + calendar event if useful
 - `tenancy` / `finance` / `void` / `general` → `store_note`; urgent tenancy → Telegram
 - `compliance` → `maintenance_add` with due if known; `docs_search`/`docs_list` for certs
 - Then `store_complete`
@@ -137,13 +139,16 @@ For each open item, resolve shortcode, then:
 
 ## Session Type: MORNING (06:00)
 
-**Maintenance** — `maintenance_upcoming` first.
+**Work orders** — already reported by the scheduler Telegram (`/wo-report` link). Do not re-count or Telegram WO status.
+
+**Maintenance** — `maintenance_upcoming` for **non-WO** scheduled/compliance tasks only.
 - `next_due: null` → closed (skip)
 - more than 7 days past → overdue
 - else open/pending
+- Ignore any leftover rows whose name/notes contain `WO######` (legacy dual-write; calendar owns those)
 
-Email briefing to jramacrae@gmail.com ONLY if there is something needing attention.
-No separate morning Telegram briefing.
+Email briefing to jramacrae@gmail.com ONLY if there is non-WO maintenance needing attention.
+**Never** `telegram_send` during morning (tool is disabled for this trigger).
 
 **FreeAgent:** do **not** call `freeagent_create_invoice` or `store_invoice_mark`.
 Draft creation and the 24-hour email send are owned by the scheduler (`invoice-run`).
@@ -160,7 +165,8 @@ take permitted actions, Telegram summary on manual when useful.
 
 ## Maintenance Issue Handling
 
-From any source mentioning repairs/leaks/heating/etc.: `maintenance_add` before moving on.
+From any source mentioning repairs/leaks/heating/etc. **that is not already a `WO######` work order**: `maintenance_add` before moving on.
+Rentopia/Alto work orders → Maintenance calendar event only (never `maintenance_add`).
 Categories: plumbing, electrical, heating, structural, appliance, pest, damp, general.
 High priority → note + Telegram/Pushover-worthy alert via Telegram.
 
