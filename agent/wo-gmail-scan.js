@@ -238,7 +238,18 @@ async function run(opts = {}) {
 
       const shortcode = wo.resolveShortcode(parsed.property_lines, jjp);
       if (!shortcode) {
-        skipped.push({ reason: 'no_shortcode', property_lines: parsed.property_lines, order_number: orderNumber });
+        // A real WO number (from the PDF or subject) or a parsed address line means
+        // this is genuinely a work order whose address just didn't match a known
+        // property — worth a human glance. A bare `email-*` fallback with no address
+        // at all is just some other rentopia.uk PDF the broad search query swept up.
+        const propertyRelated = /^WO\d+/i.test(orderNumber) || (parsed.property_lines || []).length > 0;
+        skipped.push({
+          reason: 'no_shortcode',
+          property_lines: parsed.property_lines,
+          order_number: orderNumber,
+          subject: detail.subject || '',
+          propertyRelated,
+        });
         continue;
       }
 
@@ -300,8 +311,18 @@ function formatTelegramReport(result) {
     if (real.length > 20) lines.push(`• …+${real.length - 20} more`);
   }
   const noShortcode = result.skipped.filter((s) => s.reason === 'no_shortcode');
-  if (noShortcode.length) {
-    lines.push(`⚠️ ${noShortcode.length} WO(s) — no shortcode resolved, check manually`);
+  const propertyRelated = noShortcode.filter((s) => s.propertyRelated);
+  if (propertyRelated.length) {
+    lines.push(`⚠️ ${propertyRelated.length} WO(s) — no shortcode resolved, check manually:`);
+    for (const s of propertyRelated.slice(0, 10)) {
+      const addr = (s.property_lines || []).join(', ');
+      lines.push(`• ${s.order_number}${addr ? ` — ${addr}` : ` — "${s.subject}"`}`);
+    }
+    if (propertyRelated.length > 10) lines.push(`• …+${propertyRelated.length - 10} more`);
+  }
+  const otherNoise = noShortcode.length - propertyRelated.length;
+  if (otherNoise > 0) {
+    lines.push(`(${otherNoise} other rentopia.uk PDF(s) ignored — not work orders)`);
   }
   if (!lines.length) return null;
   return lines.join('\n');
