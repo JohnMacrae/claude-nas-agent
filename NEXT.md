@@ -11,15 +11,21 @@ Two independent breakages, both now resolved:
 
 **Committed** (`bd0e9c0` + follow-up on `fix/wo-paperless-bridge-handoff`): Ollama-backend support (dormant unless `LLM_BACKEND=ollama`), the morning `telegram_send` guard, WO-vs-`maintenance_add` dedup fixes, and defaults in `compose.yml`/`.env.example` flipped back to `openrouter` (was defaulting to `ollama`, which is how the outage happened — a fresh checkout would have inherited the same break).
 
-### Model fallback — added 2026-08-25 (`agent/agent-runner.js`)
+### Model fallback — added 2026-08-25 (`agent/agent-runner.js`), now cross-backend
 
-`AGENT_MODEL_FALLBACK` (comma-separated, optional) is tried in order if `AGENT_MODEL`'s request fails for any reason (model pulled/renamed, key limit, provider outage). Runner logs which model actually served each request; `steps`/result JSON reports the model that succeeded, not just the configured primary.
+`AGENT_MODEL_FALLBACK` (comma-separated, optional) is tried in order if `AGENT_MODEL`'s request fails for any reason (model pulled/renamed, key limit, backend unreachable, provider outage). Each entry is either a bare model (same backend as `AGENT_MODEL`) or `backend:model` (e.g. `openrouter:google/gemini-2.5-flash`) to fail over to a different backend entirely. Runner logs which backend+model actually served each request; the result JSON's `backend`/`model` fields report what succeeded, not just the configured primary.
+
+**Primary is now Ollama on shack** (`qwen2.5:7b-instruct-q4_K_M`), confirmed reachable 2026-08-25 (port 11434 open, `ollama serve` running). Tried `qwen3:4b` first — worked but far too slow for scheduled use (7 minutes for one Telegram tool-call round trip vs qwen2.5:7b-instruct's 8 seconds for the same test). Falls over to OpenRouter if shack is down or the model errors.
 
 Current live `.env` (not committed — gitignored):
 ```
-AGENT_MODEL=~deepseek/deepseek-v4-flash-latest
-AGENT_MODEL_FALLBACK=google/gemini-2.5-flash,minimax/minimax-m2.7:free,nvidia/nemotron-3-super-120b-a12b:free
+LLM_BACKEND=ollama
+OLLAMA_BASE_URL=http://shack.beetal-carp.ts.net:11434
+AGENT_MODEL=qwen2.5:7b-instruct-q4_K_M
+AGENT_MODEL_FALLBACK=openrouter:~deepseek/deepseek-v4-flash-latest,openrouter:google/gemini-2.5-flash,openrouter:minimax/minimax-m2.7:free,openrouter:nvidia/nemotron-3-super-120b-a12b:free
 ```
+
+Watch: shack is John's Windows PC — if it's off/asleep/rebooting, `LLM_BACKEND=ollama` sessions fall through to OpenRouter automatically (tested — see commit). No action needed unless the OpenRouter fallback chain is also exhausted.
 Last two fallbacks are free-tier OpenRouter models (confirmed working, no spend-limit exposure) — genuine last-resort if both paid models are unavailable. Verified end-to-end by forcing a bogus primary model and confirming the runner logs the fallthrough correctly.
 
 ---
