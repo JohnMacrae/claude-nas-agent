@@ -16,6 +16,8 @@ const woReport = require('./wo-report');
 const pending = require('./pending');
 const gcal = require('./gcal');
 const invoiceRun = require('./invoice-run');
+const wo = require('./wo');
+const woGmailScan = require('./wo-gmail-scan');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
 const LOGS_DIR = process.env.LOGS_DIR || '/logs';
@@ -446,6 +448,12 @@ async function sendInvoiceRunReport(result) {
 
 let lastTick = { hm: -1, propertyCheckHour: -1 };
 
+// Runs before each session so new work orders are captured first — 15
+// minutes ahead of the morning session (0600) and each property-check
+// (0800/1000/1200/1400/1600). Mirrors mail-reader's former work-order-
+// processor cron times. Value is the Gmail search day-window.
+const WO_SCAN_TIMES = { 530: 7, 745: 1, 945: 1, 1145: 1, 1345: 1, 1545: 1, 1745: 1 };
+
 async function tick() {
   const now = new Date();
   const hm = now.getHours() * 100 + now.getMinutes();
@@ -454,6 +462,26 @@ async function tick() {
   if (!workday) return;
   if (hm === lastTick.hm) return;
   lastTick.hm = hm;
+
+  if (WO_SCAN_TIMES[hm] !== undefined) {
+    try {
+      const result = await woGmailScan.run({ days: WO_SCAN_TIMES[hm] });
+      log(
+        `wo-gmail-scan (${hm}): scanned=${result.scanned} captured=${result.captured.length} ` +
+        `pdfsSaved=${result.pdfsSaved} skipped=${result.skipped.length}`
+      );
+      if (result.pdfsSaved > 0) {
+        try { await wo.scan(); } catch (e) { log(`post-scan wo.scan() failed: ${e.message}`); }
+      }
+      if (result.newUrgent.length && !sessionRunning && !flagExists('PAUSED') && !flagExists('KILLED')) {
+        await launchSession('property-check', result.urgentReason);
+      }
+      const text = woGmailScan.formatTelegramReport(result);
+      if (text) await sendTelegram(TELEGRAM_CHAT_ID, text);
+    } catch (e) {
+      log(`wo-gmail-scan (${hm}) failed: ${e.message}`);
+    }
+  }
 
   if (hm === 600) {
     // Re-colour first so the morning session sees a current calendar. A

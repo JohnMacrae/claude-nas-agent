@@ -16,6 +16,7 @@ const DATA_DIR = process.env.DATA_DIR || '/data';
 const AGENT_DIR = process.env.AGENT_DIR || path.dirname(__filename);
 const WORK_ORDERS_DIR = process.env.WORK_ORDERS_DIR || '/output/work_orders';
 const JJP_PATH = path.join(AGENT_DIR, 'JJP_Property_List.md');
+const ALIASES_PATH = path.join(AGENT_DIR, 'property-aliases.json');
 const CACHE_FILE = path.join(DATA_DIR, 'tenant-contacts.json');
 
 function parseArgs(argv) {
@@ -52,10 +53,28 @@ function loadJjp() {
   return map;
 }
 
+let _aliasesCache = null;
+function loadAliases() {
+  if (_aliasesCache) return _aliasesCache;
+  try {
+    const j = JSON.parse(fs.readFileSync(ALIASES_PATH, 'utf8'));
+    _aliasesCache = j.street_aliases || {};
+  } catch {
+    _aliasesCache = {};
+  }
+  return _aliasesCache;
+}
+
 function norm(s) {
-  return String(s || '')
+  let out = String(s || '')
     .toLowerCase()
-    .replace(/[.,]/g, ' ')
+    .replace(/[''']/g, '')
+    .replace(/[.,]/g, ' ');
+  const aliases = loadAliases();
+  for (const [alias, canonical] of Object.entries(aliases)) {
+    out = out.split(alias.toLowerCase()).join(canonical.toLowerCase());
+  }
+  return out
     .replace(/\b(court|crt|road|rd|street|st|gardens|gdns|grove|gr|green|grn|close|cl|mews|walk|way|park|square|sq)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -347,7 +366,7 @@ async function main() {
   console.log(JSON.stringify(result));
 }
 
-module.exports = { scan, lookup, list, parseWoText, resolveShortcode };
+module.exports = { scan, lookup, list, parseWoText, resolveShortcode, loadJjp };
 
 if (require.main === module) {
   main().catch((e) => {
