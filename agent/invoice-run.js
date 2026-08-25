@@ -243,6 +243,8 @@ async function sendPass({ dryRun, sendAfterHours }) {
         event_id: row.event_id,
         invoice_url: row.invoice_url,
         reference: row.reference,
+        acronym: row.acronym || null,
+        net_value: row.net_value,
         dry_run: true,
       });
       continue;
@@ -254,6 +256,8 @@ async function sendPass({ dryRun, sendAfterHours }) {
         event_id: row.event_id,
         invoice_url: row.invoice_url,
         reference: result.reference || row.reference,
+        acronym: row.acronym || null,
+        net_value: row.net_value,
       });
     } catch (e) {
       skipped.push({
@@ -340,24 +344,48 @@ async function run(opts = {}) {
   };
 }
 
+// "Invoiced" = has a FreeAgent invoice, draft or sent (drafting counts as
+// invoiced — the 24h hold is a review window, not a billing gap).
+// "Unpaid" here means completed but NOT invoiced: notes didn't parse to a
+// billable line, or FreeAgent create failed — these need a manual look,
+// and previously silently vanished from the report.
 function formatTelegramReport(result) {
   const lines = [];
-  if (result.created.length) {
-    lines.push(`Drafted ${result.created.length}:`);
-    for (const c of result.created.slice(0, 20)) {
-      lines.push(`• ${c.summary}${c.reference ? ` → #${c.reference}` : ''} £${c.net_value}`);
+
+  const invoiced = [
+    ...result.created.map((c) => ({ ...c, state: 'drafted' })),
+    ...result.sent.map((s) => ({ ...s, state: 'sent' })),
+  ];
+  if (invoiced.length) {
+    lines.push(`✅ Completed & invoiced (${invoiced.length}):`);
+    for (const c of invoiced.slice(0, 20)) {
+      const label = c.summary || c.acronym || c.event_id;
+      const ref = c.reference ? `#${c.reference}` : '';
+      const amount = c.net_value != null ? ` £${Number(c.net_value).toFixed(2)}` : '';
+      const tag = c.state === 'sent' ? ' (sent)' : '';
+      lines.push(`• ${label}${ref ? ` → ${ref}` : ''}${amount}${tag}`);
     }
-    if (result.created.length > 20) lines.push(`• …+${result.created.length - 20} more`);
+    if (invoiced.length > 20) lines.push(`• …+${invoiced.length - 20} more`);
   }
-  if (result.sent.length) {
-    lines.push(`Emailed ${result.sent.length}:`);
-    for (const s of result.sent.slice(0, 20)) {
-      lines.push(`• ${s.reference || s.event_id}`);
+
+  const unpaid = result.skipped.filter(
+    (s) => s.reason === 'no_billable_lines' || s.reason === 'create_failed'
+  );
+  if (unpaid.length) {
+    lines.push(`⚠️ Completed, unpaid (${unpaid.length}):`);
+    for (const u of unpaid.slice(0, 20)) {
+      const why = u.reason === 'no_billable_lines'
+        ? 'no billable lines in notes'
+        : `FreeAgent create failed: ${(u.error || 'unknown error').slice(0, 80)}`;
+      lines.push(`• ${u.summary || u.event_id} — ${why}`);
     }
+    if (unpaid.length > 20) lines.push(`• …+${unpaid.length - 20} more`);
   }
+
   if (result.outstanding.length) {
-    lines.push(`Outstanding ${result.outstanding.length} open WOs — see /wo-report`);
+    lines.push(`Outstanding open (${result.outstanding.length}) — see /wo-report`);
   }
+
   if (!lines.length) return null;
   return lines.join('\n');
 }
