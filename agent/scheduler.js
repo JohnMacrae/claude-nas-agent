@@ -11,7 +11,11 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const store = require('./store');
+const woColour = require('./wo-colour');
+const woReport = require('./wo-report');
 const pending = require('./pending');
+const gcal = require('./gcal');
+const invoiceRun = require('./invoice-run');
 
 const FLAGS_DIR = process.env.FLAGS_DIR || '/flags';
 const LOGS_DIR = process.env.LOGS_DIR || '/logs';
@@ -137,6 +141,31 @@ function sendPushover(title, message, priority) {
     req.write(payload);
     req.end();
   });
+}
+
+const GCAL_AUTH_FLAG = 'gcal-auth-dead';
+
+async function maybeAlertGcalAuthFailure(err) {
+  const msg = String(err?.message || err || '');
+  if (!gcal.isInvalidGrantError({ message: msg })) return;
+  if (flagExists(GCAL_AUTH_FLAG)) return;
+  setFlag(GCAL_AUTH_FLAG);
+  await sendPushover(
+    'Property Agent — Calendar auth dead',
+    'Google Calendar refresh token expired or revoked (invalid_grant). ' +
+    'Re-authorise at rentr-dashboard /admin/google-auth, then run tools/sync-gcal-token.sh. ' +
+    'If this recurs every ~7 days, publish the OAuth client to Production in Google Cloud Console.',
+    1
+  );
+}
+
+async function clearGcalAuthAlertIfHealthy() {
+  const status = await gcal.checkAuth();
+  if (status.ok && flagExists(GCAL_AUTH_FLAG)) {
+    clearFlag(GCAL_AUTH_FLAG);
+    log('Google Calendar auth restored — cleared gcal-auth-dead flag');
+  }
+  return status;
 }
 
 // --- Session log ---
@@ -309,7 +338,7 @@ async function launchSession(trigger, context = null, options = {}) {
     '--prompt', prompt,
   ];
 
-  log(`Launching ${trigger} session via OpenRouter runner`);
+  log(`Launching ${trigger} session via ${process.env.LLM_BACKEND || 'openrouter'} runner`);
   sessionRunning = true;
 
   const logPath = path.join(LOGS_DIR, `session-${trigger}-${Date.now()}.log`);
@@ -373,6 +402,48 @@ function checkCommandAuth(req) {
 
 // --- Scheduler tick ---
 
+// Tailscale MagicDNS name of the NAS, over the tailnet-only `tailscale serve`
+// proxy so the link opens without a browser security warning.
+//
+// 8448 rather than 3005 because Docker publishes 0.0.0.0:3005, which includes
+// the Tailscale interface — `tailscale serve --https=3005` cannot bind a port
+// Docker already owns. 8448 continues the existing 8444-8447 series and
+// proxies to 127.0.0.1:3005. Tailnet-only, never Funnel: this page is
+// unauthenticated and lists addresses and tenant problems.
+const REPORT_BASE_URL = process.env.REPORT_BASE_URL || 'https://dnas.beetal-carp.ts.net:8448';
+
+// One deterministic Telegram each morning with the outstanding count and a link
+// to the report. Scheduler code rather than agent output, so it cannot be
+// forgotten by the model and costs no tokens. Silent when nothing is
+// outstanding — matches "only if there is something needing attention"
+// (agent-system-prompt.md:145).
+async function sendMorningReportLink(result) {
+  if (!TELEGRAM_CHAT_ID) return;
+  const stale = result.stale || 0;
+  const open = result.open || 0;
+  if (!stale && !open) return;
+
+  const parts = [];
+  if (stale) parts.push(`${stale} overdue`);
+  if (open) parts.push(`${open} open`);
+  const text = `Work orders: ${parts.join(', ')}.\n${REPORT_BASE_URL}/wo-report`;
+
+  await sendTelegram(TELEGRAM_CHAT_ID, text);
+  log(`Morning report link sent: ${stale} overdue, ${open} open`);
+}
+
+async function sendInvoiceRunReport(result) {
+  if (!TELEGRAM_CHAT_ID) return;
+  const text = invoiceRun.formatTelegramReport(result);
+  if (!text) return;
+  const withLink = `${text}\n${REPORT_BASE_URL}/wo-report`;
+  await sendTelegram(TELEGRAM_CHAT_ID, withLink);
+  log(
+    `Invoice run report: created=${result.counts.created} sent=${result.counts.sent} ` +
+    `outstanding=${result.counts.outstanding} skipped=${result.counts.skipped}`
+  );
+}
+
 let lastTick = { hm: -1, propertyCheckHour: -1 };
 
 async function tick() {
@@ -384,7 +455,32 @@ async function tick() {
   if (hm === lastTick.hm) return;
   lastTick.hm = hm;
 
-  if (hm === 600) { await launchSession('morning'); return; }
+  if (hm === 600) {
+    // Re-colour first so the morning session sees a current calendar. A
+    // failure here must not cost us the session, so it is caught and logged.
+    try {
+      const result = await woColour.run();
+      log(`wo-colour (morning): scanned=${result.scanned} changed=${result.changed} stale=${result.stale}`);
+      await clearGcalAuthAlertIfHealthy();
+      await sendMorningReportLink(result);
+    } catch (e) {
+      log(`wo-colour (morning) failed: ${e.message}`);
+      await maybeAlertGcalAuthFailure(e);
+    }
+    // Deterministic invoice create/send — owns FreeAgent drafts (not the LLM).
+    try {
+      const inv = await invoiceRun.run();
+      log(
+        `invoice-run (morning): created=${inv.counts.created} sent=${inv.counts.sent} ` +
+        `outstanding=${inv.counts.outstanding} skipped=${inv.counts.skipped}`
+      );
+      await sendInvoiceRunReport(inv);
+    } catch (e) {
+      log(`invoice-run (morning) failed: ${e.message}`);
+    }
+    await launchSession('morning');
+    return;
+  }
 
   const operating = isOperatingHours(now);
   if (!operating) return;
@@ -428,8 +524,11 @@ function startHttpServer() {
         watchdogStatus,
         paused: flagExists('PAUSED'),
         killed: flagExists('KILLED'),
-        runner: 'openrouter',
-        model: process.env.AGENT_MODEL || 'google/gemini-2.5-flash',
+        runner: process.env.LLM_BACKEND || 'openrouter',
+        model: process.env.AGENT_MODEL || (
+          (process.env.LLM_BACKEND || 'openrouter') === 'ollama' ? 'qwen3' : 'google/gemini-2.5-flash'
+        ),
+        ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://shack.beetal-carp.ts.net:11434',
         openInbox: openInbox.length,
         pendingTelegramReplies: pendingTelegramReplies.length,
         pendingConfirm: pending.getPending(),
@@ -500,6 +599,12 @@ function startHttpServer() {
         date: parsed.date,
         order_number: parsed.order_number || null,
         source: parsed.source || 'http',
+        // Full WO detail — parse_pdf already extracts these; older callers
+        // that only send property/note still work, the columns are nullable.
+        priority: parsed.priority || null,
+        problem: parsed.problem || null,
+        description: parsed.description || null,
+        address: parsed.address || null,
       });
       log(`Inbox item added: ${record.id} ${record.property} ${record.order_number || ''} (${record.status})`);
 
@@ -520,6 +625,216 @@ function startHttpServer() {
       log('Agent manually resumed via /resume');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: 'Agent resumed' }));
+      return;
+    }
+
+    // Invoice ledger — replaces the Open Brain [GCAL-INVOICED] thoughts the
+    // invoicing agent used to write. Called by property_invoicing over HTTP.
+    if (req.method === 'POST' && (url.pathname === '/invoice-check' || url.pathname === '/invoice-mark')) {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let parsed;
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+        return;
+      }
+
+      const eventId = parsed.event_id || parsed.eventId;
+      if (!eventId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'event_id is required' }));
+        return;
+      }
+
+      // Never let a store failure surface as a clean "not invoiced" — the
+      // caller would read that as permission to bill again.
+      try {
+        if (url.pathname === '/invoice-check') {
+          const row = await store.invoiceCheck(eventId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, invoiced: Boolean(row), row: row || null }));
+          return;
+        }
+
+        const row = await store.invoiceMark(eventId, {
+          acronym: parsed.acronym ?? null,
+          hours: parsed.hours ?? null,
+        });
+        const duplicate = Boolean(row.duplicate);
+        log(`Invoice ledger: ${eventId} ${duplicate ? 'already marked (duplicate)' : 'marked'}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, duplicate, row }));
+      } catch (e) {
+        log(`Invoice ledger error on ${url.pathname} for ${eventId}: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Full work-order detail by WO number — read by the invoicing agent to
+    // compose FreeAgent invoice comments (see property_invoicing step 2f).
+    if (req.method === 'GET' && url.pathname === '/wo-detail') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const wo = (url.searchParams.get('wo') || '').trim().toUpperCase();
+      if (!wo) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'wo query parameter is required' }));
+        return;
+      }
+
+      // As with the invoice ledger, a store failure must not read as "no such
+      // work order" — that would silently produce an invoice with no detail.
+      try {
+        const row = await store.inboxByOrder(wo);
+        res.writeHead(row ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: Boolean(row), wo, item: row || null }));
+      } catch (e) {
+        log(`/wo-detail error for ${wo}: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Outstanding work orders as a browsable page — this is what the morning
+    // Telegram links to. Deliberately unauthenticated: read-only, and reachable
+    // only from the LAN or the tailnet. The caller is a browser, so both the
+    // success and failure paths must return HTML, never JSON.
+    if (req.method === 'GET' && url.pathname === '/wo-report') {
+      try {
+        const from = url.searchParams.get('from') || undefined;
+        const html = await woReport.render({ from });
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(html);
+      } catch (e) {
+        log(`/wo-report error: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(woReport.renderError(e.message));
+      }
+      return;
+    }
+
+    // Re-colour work-order events on the Maintenance calendar. Also runs daily
+    // with the morning session; this is the manual trigger.
+    if (req.method === 'POST' && url.pathname === '/wo-colour') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+        return;
+      }
+
+      try {
+        const result = await woColour.run({ from: parsed.from, dryRun: Boolean(parsed.dry_run) });
+        log(`wo-colour: scanned=${result.scanned} changed=${result.changed} stale=${result.stale}${result.dryRun ? ' (dry run)' : ''}`);
+        res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        log(`wo-colour error: ${e.message}`);
+        await maybeAlertGcalAuthFailure(e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Deterministic FreeAgent draft create + 24h email send. Morning schedule
+    // also runs this; HTTP is for manual / one-shot backfill.
+    if (req.method === 'POST' && url.pathname === '/invoice-run') {
+      if (!checkCommandAuth(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Unauthorized — set X-Command-Token' }));
+        return;
+      }
+
+      const body = await readBody(req);
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }));
+        return;
+      }
+
+      try {
+        const result = await invoiceRun.run({
+          dryRun: Boolean(parsed.dry_run),
+          createOnly: Boolean(parsed.create_only),
+          sendOnly: Boolean(parsed.send_only),
+          from: parsed.from || undefined,
+          sendAfterHours: parsed.send_after_hours != null
+            ? Number(parsed.send_after_hours)
+            : 24,
+        });
+        log(
+          `invoice-run: created=${result.counts.created} sent=${result.counts.sent} ` +
+          `outstanding=${result.counts.outstanding} skipped=${result.counts.skipped}` +
+          `${result.dryRun ? ' (dry run)' : ''}`
+        );
+        if (!parsed.dry_run && !parsed.silent) {
+          await sendInvoiceRunReport(result);
+        }
+        res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        log(`invoice-run error: ${e.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // Refresh tenant-contacts.json from /output/work_orders PDFs (called by WO processor)
+    if (req.method === 'POST' && url.pathname === '/wo-scan') {
+      log('HTTP /wo-scan');
+      const proc = spawn('node', [path.join(AGENT_DIR, 'wo.js'), 'scan'], {
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (d) => { stdout += d; });
+      proc.stderr.on('data', (d) => { stderr += d; });
+      proc.on('close', (code) => {
+        let result;
+        try {
+          result = JSON.parse(stdout.trim() || '{}');
+        } catch {
+          result = { ok: code === 0, raw: stdout.trim(), stderr: stderr.trim() };
+        }
+        if (code !== 0 && result.ok !== false) result.ok = false;
+        if (stderr.trim()) result.stderr = stderr.trim();
+        log(`wo-scan done: scanned=${result.scanned ?? '?'} properties=${result.properties ?? '?'}`);
+        res.writeHead(code === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
       return;
     }
 
@@ -815,6 +1130,19 @@ async function main() {
     }
   } catch (e) {
     log(`Startup pending-reply check failed: ${e.message}`);
+  }
+
+  try {
+    const gcalStatus = await gcal.checkAuth();
+    if (gcalStatus.ok) {
+      log('Google Calendar auth OK');
+      if (flagExists(GCAL_AUTH_FLAG)) clearFlag(GCAL_AUTH_FLAG);
+    } else {
+      log(`Google Calendar auth failed: ${gcalStatus.error}`);
+      await maybeAlertGcalAuthFailure(new Error(gcalStatus.error));
+    }
+  } catch (e) {
+    log(`Startup gcal auth check failed: ${e.message}`);
   }
 
   log('Scheduler running (standalone — no OB1)');

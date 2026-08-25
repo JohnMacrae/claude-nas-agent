@@ -3,10 +3,23 @@
 //
 //   node gcal.js list-calendars
 //   node gcal.js list-events --calendar Maintenance --from ISO --to ISO
-//   node gcal.js create-event --calendar Maintenance --summary "..." --date YYYY-MM-DD [--description ...]
-//   node gcal.js update-event --calendar Maintenance --event-id ID --description "..."
+//   node gcal.js create-event --calendar Maintenance --summary "..." --date YYYY-MM-DD [--description ...] [--color-id N]
+//   node gcal.js update-event --calendar Maintenance --event-id ID [--description "..."] [--color-id N|default]
+//
+// Event colours are Google's fixed palette, by id:
+//   1 Lavender  2 Sage     3 Grape    4 Flamingo  5 Banana   6 Tangerine
+//   7 Peacock   8 Graphite 9 Blueberry 10 Basil   11 Tomato
+// An event with no colorId uses the calendar's own colour; --color-id default
+// restores that.
 //
 // Auth via env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
+// Refresh token resolution (first match wins):
+//   1. GOOGLE_REFRESH_TOKEN_FILE or /data/google-refresh-token (written by
+//      rentr-dashboard on /admin/google-auth — single source of truth)
+//   2. GOOGLE_REFRESH_TOKEN env (legacy fallback)
+
+const fs = require('fs');
+const path = require('path');
 
 const KNOWN = {
   Maintenance: '963dbd01a359d150a2ba10371bf80a30dc448da1100abb14ab750966a9e8a547@group.calendar.google.com',
@@ -50,13 +63,33 @@ function resolveCalendarId(nameOrId) {
   return nameOrId;
 }
 
+function resolveRefreshToken() {
+  const tokenFile = process.env.GOOGLE_REFRESH_TOKEN_FILE
+    || path.join(process.env.DATA_DIR || '/data', 'google-refresh-token');
+  try {
+    if (fs.existsSync(tokenFile)) {
+      const fromFile = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (fromFile) return fromFile;
+    }
+  } catch {
+    // fall through to env
+  }
+  return process.env.GOOGLE_REFRESH_TOKEN || '';
+}
+
+function isInvalidGrantError(err) {
+  const msg = String(err?.message || err || '');
+  return msg.includes('invalid_grant');
+}
+
 async function getAccessToken() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+  const refreshToken = resolveRefreshToken();
   if (!clientId || !clientSecret || !refreshToken) {
     throw new Error(
-      'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN must be set'
+      'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and a refresh token must be set ' +
+      '(env GOOGLE_REFRESH_TOKEN or /data/google-refresh-token from rentr-dashboard re-auth)'
     );
   }
   if (cachedToken && Date.now() < cachedExpires) return cachedToken;
@@ -74,7 +107,11 @@ async function getAccessToken() {
   });
   const data = await res.json();
   if (!res.ok || !data.access_token) {
-    throw new Error(`Google token refresh failed: ${JSON.stringify(data)}`);
+    const hint = data.error === 'invalid_grant'
+      ? ' Re-authorise at rentr-dashboard /admin/google-auth, then run tools/sync-gcal-token.sh. ' +
+        'If this recurs every ~7 days, publish the OAuth client to Production in Google Cloud Console.'
+      : '';
+    throw new Error(`Google token refresh failed: ${JSON.stringify(data)}.${hint}`);
   }
   cachedToken = data.access_token;
   cachedExpires = Date.now() + (Number(data.expires_in || 3500) - 60) * 1000;
@@ -144,6 +181,9 @@ async function listEvents(args) {
     start: e.start?.date || e.start?.dateTime || null,
     end: e.end?.date || e.end?.dateTime || null,
     allDay: !!e.start?.date,
+    // Google omits colorId entirely when the event uses the calendar's default
+    // colour, so null means "default", not "unset".
+    colorId: e.colorId || null,
     htmlLink: e.htmlLink || null,
   }));
   return { ok: true, calendarId, count: events.length, events };
@@ -164,6 +204,9 @@ async function createEvent(args) {
     start: { date },
     end: { date: endStr },
   };
+  if (args['color-id'] !== undefined && args['color-id'] !== true) {
+    body.colorId = String(args['color-id']);
+  }
   const created = await api('POST', `/calendars/${encodeURIComponent(calendarId)}/events`, { body });
   return {
     ok: true,
@@ -173,6 +216,7 @@ async function createEvent(args) {
       description: created.description || '',
       start: created.start?.date || created.start?.dateTime,
       end: created.end?.date || created.end?.dateTime,
+      colorId: created.colorId || null,
       htmlLink: created.htmlLink,
     },
   };
@@ -185,7 +229,14 @@ async function updateEvent(args) {
   const patch = {};
   if (args.description !== undefined && args.description !== true) patch.description = args.description;
   if (args.summary !== undefined && args.summary !== true) patch.summary = args.summary;
-  if (!Object.keys(patch).length) throw new Error('Provide --description and/or --summary to update');
+  if (args['color-id'] !== undefined && args['color-id'] !== true) {
+    // 'default' clears the override so the event falls back to the calendar
+    // colour. Google wants null, not an empty string, to unset it.
+    patch.colorId = String(args['color-id']) === 'default' ? null : String(args['color-id']);
+  }
+  if (!Object.keys(patch).length) {
+    throw new Error('Provide --description, --summary and/or --color-id to update');
+  }
   const updated = await api(
     'PATCH',
     `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
@@ -199,6 +250,7 @@ async function updateEvent(args) {
       description: updated.description || '',
       start: updated.start?.date || updated.start?.dateTime,
       end: updated.end?.date || updated.end?.dateTime,
+      colorId: updated.colorId || null,
     },
   };
 }
@@ -228,11 +280,23 @@ async function main() {
   console.log(JSON.stringify(result));
 }
 
+async function checkAuth() {
+  try {
+    await getAccessToken();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message, invalidGrant: isInvalidGrantError(e) };
+  }
+}
+
 module.exports = {
   listCalendars,
   listEvents,
   createEvent,
   updateEvent,
+  checkAuth,
+  resolveRefreshToken,
+  isInvalidGrantError,
   resolveCalendarId,
   KNOWN,
 };

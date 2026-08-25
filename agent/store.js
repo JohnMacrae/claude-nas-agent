@@ -6,7 +6,10 @@
 //   node store.js complete --id <id> --actioned "..."
 //   node store.js note --text "..." [--property X] [--type Y]
 //   node store.js invoice-mark --event-id <id> [--acronym X] [--hours N]
+//   node store.js invoice-mark-draft --event-id <id> --invoice-url URL [--reference R] [--net N] [--acronym X] [--hours N]
+//   node store.js invoice-mark-sent --event-id <id>
 //   node store.js invoice-check --event-id <id>
+//   node store.js list-drafts [--hours 24]
 //   node store.js list-replies
 //   node store.js mark-replies --ids id1,id2
 //   node store.js add-inbox --property --type --status --note --date --order-number --source
@@ -95,10 +98,19 @@ const jsonStore = {
       created_at: item.created_at || new Date().toISOString(),
       completed_at: null,
       actioned: null,
+      priority: item.priority || null,
+      problem: item.problem || null,
+      description: item.description || null,
+      address: item.address || null,
     };
     items.push(record);
     writeJson(FILES.inbox, items);
     return record;
+  },
+
+  async inboxByOrder(orderNumber) {
+    const items = readJson(FILES.inbox, []);
+    return items.find(i => i.order_number === orderNumber) || null;
   },
 
   async completeInboxItem(id, actioned) {
@@ -135,18 +147,63 @@ const jsonStore = {
   },
 
   async invoiceMark(eventId, extra = {}) {
+    return jsonStore.invoiceMarkDraft(eventId, extra);
+  },
+
+  async invoiceMarkDraft(eventId, extra = {}) {
     const invoices = readJson(FILES.invoices, []);
     const existing = invoices.find(i => i.event_id === eventId);
     if (existing) return { ...existing, duplicate: true };
+    const now = new Date().toISOString();
     const record = {
       event_id: eventId,
       acronym: extra.acronym ?? null,
       hours: extra.hours ?? null,
-      invoiced_at: new Date().toISOString(),
+      invoice_url: extra.invoice_url ?? null,
+      reference: extra.reference ?? null,
+      status: 'draft',
+      drafted_at: now,
+      sent_at: null,
+      net_value: extra.net_value != null ? Number(extra.net_value) : null,
+      invoiced_at: now,
     };
     invoices.push(record);
     writeJson(FILES.invoices, invoices);
     return record;
+  },
+
+  async invoiceMarkSent(eventId) {
+    const invoices = readJson(FILES.invoices, []);
+    const idx = invoices.findIndex(i => i.event_id === eventId);
+    if (idx === -1) return null;
+    const now = new Date().toISOString();
+    invoices[idx] = {
+      ...invoices[idx],
+      status: 'sent',
+      sent_at: now,
+    };
+    writeJson(FILES.invoices, invoices);
+    return invoices[idx];
+  },
+
+  async listDraftsOlderThan(hours = 24) {
+    const cutoff = Date.now() - Number(hours) * 3600_000;
+    const invoices = readJson(FILES.invoices, []);
+    return invoices.filter(i => {
+      if ((i.status || 'draft') !== 'draft') return false;
+      if (!i.invoice_url) return false;
+      const t = new Date(i.drafted_at || i.invoiced_at || 0).getTime();
+      return t && t <= cutoff;
+    });
+  },
+
+  async invoiceUpdate(eventId, fields = {}) {
+    const invoices = readJson(FILES.invoices, []);
+    const idx = invoices.findIndex(i => i.event_id === eventId);
+    if (idx === -1) return null;
+    invoices[idx] = { ...invoices[idx], ...fields };
+    writeJson(FILES.invoices, invoices);
+    return invoices[idx];
   },
 
   async listPendingReplies() {
@@ -205,8 +262,9 @@ const pgStore = {
     const id = item.id || uuid();
     const orderNumber = item.order_number || null;
     const { rows } = await db.query(
-      `INSERT INTO inbox_items (id, property, type, status, note, date, order_number, source, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, now()))
+      `INSERT INTO inbox_items (id, property, type, status, note, date, order_number, source, created_at,
+                               priority, problem, description, address)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, now()), $10, $11, $12, $13)
        ON CONFLICT (order_number) DO NOTHING
        RETURNING *`,
       [
@@ -219,6 +277,10 @@ const pgStore = {
         orderNumber,
         item.source || 'manual',
         item.created_at || null,
+        item.priority || null,
+        item.problem || null,
+        item.description || null,
+        item.address || null,
       ]
     );
     if (rows.length) return rows[0];
@@ -229,6 +291,14 @@ const pgStore = {
     const existing = await db.query(`SELECT * FROM inbox_items WHERE order_number = $1`, [orderNumber]);
     if (existing.rows.length) return { ...existing.rows[0], duplicate: true };
     throw new Error(`addInboxItem: conflict on order_number ${orderNumber} but no matching row found`);
+  },
+
+  async inboxByOrder(orderNumber) {
+    const { rows } = await db.query(
+      `SELECT * FROM inbox_items WHERE order_number = $1`,
+      [orderNumber]
+    );
+    return rows[0] || null;
   },
 
   async completeInboxItem(id, actioned) {
@@ -252,24 +322,97 @@ const pgStore = {
     return rows[0];
   },
 
+  async ensureInvoicesSchema() {
+    return ensureInvoicesSchema();
+  },
+
   async invoiceCheck(eventId) {
+    await ensureInvoicesSchema();
     const { rows } = await db.query(`SELECT * FROM invoices WHERE event_id = $1`, [eventId]);
     return rows[0] || null;
   },
 
   async invoiceMark(eventId, extra = {}) {
+    return pgStore.invoiceMarkDraft(eventId, extra);
+  },
+
+  async invoiceMarkDraft(eventId, extra = {}) {
+    await ensureInvoicesSchema();
     const { rows } = await db.query(
-      `INSERT INTO invoices (event_id, acronym, hours, invoiced_at)
-       VALUES ($1, $2, $3, now())
+      `INSERT INTO invoices (
+         event_id, acronym, hours, invoice_url, reference, status,
+         drafted_at, sent_at, net_value, invoiced_at
+       ) VALUES ($1, $2, $3, $4, $5, 'draft', now(), NULL, $6, now())
        ON CONFLICT (event_id) DO NOTHING
        RETURNING *`,
-      [eventId, extra.acronym ?? null, extra.hours ?? null]
+      [
+        eventId,
+        extra.acronym ?? null,
+        extra.hours ?? null,
+        extra.invoice_url ?? null,
+        extra.reference ?? null,
+        extra.net_value != null ? Number(extra.net_value) : null,
+      ]
     );
     if (rows.length) return rows[0];
 
     const existing = await db.query(`SELECT * FROM invoices WHERE event_id = $1`, [eventId]);
     if (existing.rows.length) return { ...existing.rows[0], duplicate: true };
-    throw new Error(`invoiceMark: conflict on event_id ${eventId} but no matching row found`);
+    throw new Error(`invoiceMarkDraft: conflict on event_id ${eventId} but no matching row found`);
+  },
+
+  async invoiceMarkSent(eventId) {
+    await ensureInvoicesSchema();
+    const { rows } = await db.query(
+      `UPDATE invoices
+       SET status = 'sent', sent_at = now()
+       WHERE event_id = $1
+       RETURNING *`,
+      [eventId]
+    );
+    return rows[0] || null;
+  },
+
+  async listDraftsOlderThan(hours = 24) {
+    await ensureInvoicesSchema();
+    const { rows } = await db.query(
+      `SELECT * FROM invoices
+       WHERE COALESCE(status, 'draft') = 'draft'
+         AND invoice_url IS NOT NULL
+         AND COALESCE(drafted_at, invoiced_at) <= now() - ($1::text || ' hours')::interval
+       ORDER BY COALESCE(drafted_at, invoiced_at) ASC`,
+      [String(Number(hours))]
+    );
+    return rows;
+  },
+
+  async invoiceUpdate(eventId, fields = {}) {
+    await ensureInvoicesSchema();
+    const { rows } = await db.query(
+      `UPDATE invoices SET
+         invoice_url = COALESCE($2, invoice_url),
+         reference = COALESCE($3, reference),
+         status = COALESCE($4, status),
+         net_value = COALESCE($5, net_value),
+         hours = COALESCE($6, hours),
+         acronym = COALESCE($7, acronym),
+         drafted_at = COALESCE($8::timestamptz, drafted_at),
+         sent_at = COALESCE($9::timestamptz, sent_at)
+       WHERE event_id = $1
+       RETURNING *`,
+      [
+        eventId,
+        fields.invoice_url ?? null,
+        fields.reference ?? null,
+        fields.status ?? null,
+        fields.net_value != null ? Number(fields.net_value) : null,
+        fields.hours != null ? Number(fields.hours) : null,
+        fields.acronym ?? null,
+        fields.drafted_at ?? null,
+        fields.sent_at ?? null,
+      ]
+    );
+    return rows[0] || null;
   },
 
   async listPendingReplies() {
@@ -308,6 +451,27 @@ const pgStore = {
   },
 };
 
+let invoicesSchemaReady = false;
+
+async function ensureInvoicesSchema() {
+  if (!USE_DB || invoicesSchemaReady) return;
+  await db.query(`
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS invoice_url text;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reference text;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS status text;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS drafted_at timestamptz;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS sent_at timestamptz;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS net_value numeric;
+  `);
+  await db.query(`
+    UPDATE invoices
+    SET status = COALESCE(NULLIF(status, ''), 'draft'),
+        drafted_at = COALESCE(drafted_at, invoiced_at, now())
+    WHERE status IS NULL OR status = '' OR drafted_at IS NULL
+  `);
+  invoicesSchemaReady = true;
+}
+
 const backend = USE_DB ? pgStore : jsonStore;
 
 // ---------------------------------------------------------------------------
@@ -320,6 +484,9 @@ function listInbox(opts) {
 function addInboxItem(item) {
   return backend.addInboxItem(item);
 }
+function inboxByOrder(orderNumber) {
+  return backend.inboxByOrder(orderNumber);
+}
 function completeInboxItem(id, actioned) {
   return backend.completeInboxItem(id, actioned);
 }
@@ -331,6 +498,18 @@ function invoiceCheck(eventId) {
 }
 function invoiceMark(eventId, extra) {
   return backend.invoiceMark(eventId, extra);
+}
+function invoiceMarkDraft(eventId, extra) {
+  return backend.invoiceMarkDraft(eventId, extra);
+}
+function invoiceMarkSent(eventId) {
+  return backend.invoiceMarkSent(eventId);
+}
+function listDraftsOlderThan(hours) {
+  return backend.listDraftsOlderThan(hours);
+}
+function invoiceUpdate(eventId, fields) {
+  return backend.invoiceUpdate(eventId, fields);
 }
 function listPendingReplies() {
   return backend.listPendingReplies();
@@ -404,10 +583,20 @@ async function cli() {
       }
       case 'invoice-mark': {
         if (!args['event-id']) throw new Error('--event-id required');
-        const record = await invoiceMark(args['event-id'], {
+        const record = await invoiceMarkDraft(args['event-id'], {
           acronym: args.acronym || null,
           hours: args.hours != null ? Number(args.hours) : null,
+          invoice_url: args['invoice-url'] || null,
+          reference: args.reference || null,
+          net_value: args.net != null ? Number(args.net) : null,
         });
+        console.log(JSON.stringify({ ok: true, record }));
+        break;
+      }
+      case 'invoice-mark-sent': {
+        if (!args['event-id']) throw new Error('--event-id required');
+        const record = await invoiceMarkSent(args['event-id']);
+        if (!record) throw new Error(`invoice not found: ${args['event-id']}`);
         console.log(JSON.stringify({ ok: true, record }));
         break;
       }
@@ -415,6 +604,12 @@ async function cli() {
         if (!args['event-id']) throw new Error('--event-id required');
         const record = await invoiceCheck(args['event-id']);
         console.log(JSON.stringify({ ok: true, invoiced: !!record, record }));
+        break;
+      }
+      case 'list-drafts': {
+        const hours = args.hours != null ? Number(args.hours) : 24;
+        const records = await listDraftsOlderThan(hours);
+        console.log(JSON.stringify({ ok: true, hours, records }, null, 2));
         break;
       }
       case 'list-replies': {
@@ -443,7 +638,7 @@ async function cli() {
         break;
       }
       default:
-        console.error(`Usage: store.js <list-inbox|complete|note|invoice-mark|invoice-check|list-replies|mark-replies|add-inbox> [options]`);
+        console.error(`Usage: store.js <list-inbox|complete|note|invoice-mark|invoice-mark-sent|invoice-check|list-drafts|list-replies|mark-replies|add-inbox> [options]`);
         process.exitCode = 1;
     }
   } catch (e) {
@@ -462,10 +657,15 @@ module.exports = {
   USE_DB,
   listInbox,
   addInboxItem,
+  inboxByOrder,
   completeInboxItem,
   addNote,
   invoiceCheck,
   invoiceMark,
+  invoiceMarkDraft,
+  invoiceMarkSent,
+  listDraftsOlderThan,
+  invoiceUpdate,
   listPendingReplies,
   addTelegramReply,
   markRepliesProcessed,

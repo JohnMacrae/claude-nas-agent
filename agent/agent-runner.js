@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// OpenRouter tool-loop runner — replaces `claude` spawn for property-agent sessions.
+// Tool-loop runner — OpenRouter or Ollama (OpenAI-compatible API).
 //
 //   node agent-runner.js --trigger <type> --prompt "..." [--system-file path]
 //
@@ -13,8 +13,25 @@ const { spawn } = require('child_process');
 const pending = require('./pending');
 
 const AGENT_DIR = process.env.AGENT_DIR || path.dirname(__filename);
+const LLM_BACKEND = (process.env.LLM_BACKEND || 'openrouter').toLowerCase();
+const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://shack.beetal-carp.ts.net:11434').replace(/\/$/, '');
 const OPENROUTER_URL = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1/chat/completions';
-const AGENT_MODEL = process.env.AGENT_MODEL || 'google/gemini-2.5-flash';
+const AGENT_MODEL = process.env.AGENT_MODEL || (
+  LLM_BACKEND === 'ollama' ? 'qwen3' : 'google/gemini-2.5-flash'
+);
+// Tried in order after AGENT_MODEL if a request fails (model pulled, key limit,
+// backend unreachable, etc). Each entry is "model" (same backend as AGENT_MODEL)
+// or "backend:model" (e.g. "openrouter:google/gemini-2.5-flash") to fall over to
+// a different backend entirely.
+const AGENT_MODEL_FALLBACKS = (process.env.AGENT_MODEL_FALLBACK || '')
+  .split(',').map((s) => s.trim()).filter(Boolean)
+  .map((entry) => {
+    const m = entry.match(/^(ollama|openrouter):(.+)$/);
+    return m ? { backend: m[1], model: m[2] } : { backend: LLM_BACKEND, model: entry };
+  })
+  .filter((c) => !(c.backend === LLM_BACKEND && c.model === AGENT_MODEL));
+let activeBackend = LLM_BACKEND;
+let activeModel = AGENT_MODEL;
 const MAX_STEPS = parseInt(process.env.AGENT_MAX_STEPS || '16', 10);
 const TIMEOUT_MS = parseInt(process.env.AGENT_TIMEOUT_MS || '180000', 10);
 
@@ -448,10 +465,21 @@ const TOOLS = [
   },
 ];
 
-async function executeTool(name, args) {
+async function executeTool(name, args, context = {}) {
   const a = args || {};
   switch (name) {
     case 'telegram_send':
+      // Morning WO/outstanding counts are sent by the scheduler (deterministic).
+      // The model previously ignored "no morning Telegram" and alarmed on the
+      // stale maintenance_tasks ledger — refuse rather than trust the prompt.
+      if (context.trigger === 'morning') {
+        return {
+          ok: false,
+          error:
+            'telegram_send is disabled for morning sessions. ' +
+            'WO outstanding is already sent by the scheduler; email-only if non-WO maintenance needs attention.',
+        };
+      }
       return runCmd(path.join(AGENT_DIR, 'telegram.js'), ['send', a.text || '']);
     case 'maintenance_upcoming': {
       const argv = ['upcoming'];
@@ -641,31 +669,66 @@ function messageText(message) {
   return '';
 }
 
-async function chat(messages) {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error('OPENROUTER_API_KEY is not set');
+function llmLabel(backend) {
+  return backend === 'ollama' ? 'Ollama' : 'OpenRouter';
+}
 
-  const res = await fetch(OPENROUTER_URL, {
-    method: 'POST',
-    headers: {
+async function chatWithModel(messages, backend, model) {
+  const payload = {
+    model,
+    messages,
+    tools: TOOLS,
+    tool_choice: 'auto',
+    temperature: 0.2,
+  };
+
+  let url;
+  let headers = { 'Content-Type': 'application/json' };
+
+  if (backend === 'ollama') {
+    url = `${OLLAMA_BASE_URL}/v1/chat/completions`;
+  } else {
+    const key = process.env.OPENROUTER_API_KEY;
+    if (!key) throw new Error('OPENROUTER_API_KEY is not set');
+    url = OPENROUTER_URL;
+    headers = {
+      ...headers,
       Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
       'HTTP-Referer': 'https://github.com/JohnMacrae/claude-nas-agent',
       'X-Title': 'property-agent',
-    },
-    body: JSON.stringify({
-      model: AGENT_MODEL,
-      messages,
-      tools: TOOLS,
-      tool_choice: 'auto',
-      temperature: 0.2,
-    }),
+    };
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(`OpenRouter ${res.status}: ${JSON.stringify(data)}`);
+    throw new Error(`${llmLabel(backend)} ${res.status}: ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+async function chat(messages) {
+  const candidates = [{ backend: LLM_BACKEND, model: AGENT_MODEL }, ...AGENT_MODEL_FALLBACKS];
+  let lastErr;
+  for (const { backend, model } of candidates) {
+    try {
+      const data = await chatWithModel(messages, backend, model);
+      if (backend !== activeBackend || model !== activeModel) {
+        log(`falling back to ${llmLabel(backend)} model ${model}`);
+      }
+      activeBackend = backend;
+      activeModel = model;
+      return data;
+    } catch (e) {
+      lastErr = e;
+      log(`${llmLabel(backend)} model ${model} failed: ${e.message}`);
+    }
+  }
+  throw lastErr;
 }
 
 async function main() {
@@ -693,7 +756,10 @@ async function main() {
     { role: 'user', content: userPrompt },
   ];
 
-  log(`start trigger=${trigger} model=${AGENT_MODEL} max_steps=${MAX_STEPS}`);
+  const fallbackNote = AGENT_MODEL_FALLBACKS.length
+    ? ` fallbacks=${AGENT_MODEL_FALLBACKS.map((c) => `${c.backend}:${c.model}`).join(',')}`
+    : '';
+  log(`start trigger=${trigger} backend=${LLM_BACKEND} model=${AGENT_MODEL}${fallbackNote} max_steps=${MAX_STEPS}`);
 
   let finalReply = '';
   let step = 0;
@@ -703,7 +769,7 @@ async function main() {
       throw new Error(`wall-clock timeout ${TIMEOUT_MS}ms`);
     }
     step += 1;
-    log(`step ${step} — calling OpenRouter`);
+    log(`step ${step} — calling ${llmLabel(activeBackend)}`);
     const data = await chat(messages);
     const choice = data.choices && data.choices[0];
     if (!choice) throw new Error(`no choices: ${JSON.stringify(data)}`);
@@ -742,7 +808,7 @@ async function main() {
           parsedArgs = {};
         }
         log(`tool ${name} ${JSON.stringify(parsedArgs).slice(0, 200)}`);
-        const result = await executeTool(name, parsedArgs);
+        const result = await executeTool(name, parsedArgs, { trigger });
         const payload = typeof result === 'string' ? result : JSON.stringify(result);
         log(`tool ${name} → ${payload.slice(0, 300)}`);
         messages.push({
@@ -768,7 +834,8 @@ async function main() {
     ok: true,
     reply: finalReply,
     trigger,
-    model: AGENT_MODEL,
+    backend: activeBackend,
+    model: activeModel,
     steps: step,
     usage: usageTotals,
     elapsed_ms: Date.now() - started,
@@ -778,7 +845,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  const result = { ok: false, error: e.message, reply: `Error: ${e.message}`, model: AGENT_MODEL };
+  const result = { ok: false, error: e.message, reply: `Error: ${e.message}`, backend: activeBackend, model: activeModel };
   console.error(`[runner] ${e.message}`);
   console.log('===AGENT_RESULT===');
   console.log(JSON.stringify(result));

@@ -18,8 +18,11 @@ services:
       - ./agent-system-prompt.md:/agent/agent-system-prompt.md:ro
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LLM_BACKEND=${LLM_BACKEND:-openrouter}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://shack.beetal-carp.ts.net:11434}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - AGENT_MODEL=${AGENT_MODEL:-google/gemini-2.5-flash}
+      - AGENT_MODEL_FALLBACK=${AGENT_MODEL_FALLBACK:-}
       - COMMAND_TOKEN=${COMMAND_TOKEN}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}

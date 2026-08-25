@@ -9,3 +9,8 @@ node_modules/
 properties.txt
 *.bak
 agent/node_modules/
+
+# Local-only — portfolio data, public repo
+BUGS.md
+WORK_ORDERS_OUTSTANDING.html
+agent/JJP_Property_List.md
