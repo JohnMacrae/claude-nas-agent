@@ -161,6 +161,26 @@ async function createPass({ events, jjp, dryRun }) {
       continue;
     }
 
+    // Same WO can appear on two different calendar events (a stray
+    // duplicate, a re-created event after a gcal-auth gap, etc). event_id
+    // dedup alone misses that — cross-check by WO number too (BUG-020).
+    const wo = woNumberOf(event);
+    if (wo) {
+      const byWo = await store.invoiceCheckByWo(wo);
+      if (byWo && byWo.event_id !== event.id) {
+        skipped.push({
+          event_id: event.id,
+          summary: event.summary,
+          reason: 'already_ledger_by_wo',
+          wo_number: wo,
+          other_event_id: byWo.event_id,
+          reference: byWo.reference || null,
+          status: byWo.status || null,
+        });
+        continue;
+      }
+    }
+
     const notes = event.description || '';
     const items = freeagent.notesToInvoiceItems(notes, event.summary, { allowMinimum: false });
     const billable = freeagent.billableItems(items);
@@ -206,6 +226,7 @@ async function createPass({ events, jjp, dryRun }) {
         invoice_url: result.invoice_url,
         reference: result.reference,
         net_value: result.net_value || net,
+        wo_number: wo || null,
       });
       created.push({
         ...entry,

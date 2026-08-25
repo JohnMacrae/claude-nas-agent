@@ -166,10 +166,17 @@ const jsonStore = {
       sent_at: null,
       net_value: extra.net_value != null ? Number(extra.net_value) : null,
       invoiced_at: now,
+      wo_number: extra.wo_number ?? null,
     };
     invoices.push(record);
     writeJson(FILES.invoices, invoices);
     return record;
+  },
+
+  async invoiceCheckByWo(woNumber) {
+    if (!woNumber) return null;
+    const invoices = readJson(FILES.invoices, []);
+    return invoices.find(i => i.wo_number === woNumber && i.status !== 'voided') || null;
   },
 
   async invoiceMarkSent(eventId) {
@@ -341,8 +348,8 @@ const pgStore = {
     const { rows } = await db.query(
       `INSERT INTO invoices (
          event_id, acronym, hours, invoice_url, reference, status,
-         drafted_at, sent_at, net_value, invoiced_at
-       ) VALUES ($1, $2, $3, $4, $5, 'draft', now(), NULL, $6, now())
+         drafted_at, sent_at, net_value, invoiced_at, wo_number
+       ) VALUES ($1, $2, $3, $4, $5, 'draft', now(), NULL, $6, now(), $7)
        ON CONFLICT (event_id) DO NOTHING
        RETURNING *`,
       [
@@ -352,6 +359,7 @@ const pgStore = {
         extra.invoice_url ?? null,
         extra.reference ?? null,
         extra.net_value != null ? Number(extra.net_value) : null,
+        extra.wo_number ?? null,
       ]
     );
     if (rows.length) return rows[0];
@@ -359,6 +367,16 @@ const pgStore = {
     const existing = await db.query(`SELECT * FROM invoices WHERE event_id = $1`, [eventId]);
     if (existing.rows.length) return { ...existing.rows[0], duplicate: true };
     throw new Error(`invoiceMarkDraft: conflict on event_id ${eventId} but no matching row found`);
+  },
+
+  async invoiceCheckByWo(woNumber) {
+    if (!woNumber) return null;
+    await ensureInvoicesSchema();
+    const { rows } = await db.query(
+      `SELECT * FROM invoices WHERE wo_number = $1 AND status <> 'voided' ORDER BY drafted_at ASC LIMIT 1`,
+      [woNumber]
+    );
+    return rows[0] || null;
   },
 
   async invoiceMarkSent(eventId) {
@@ -462,7 +480,9 @@ async function ensureInvoicesSchema() {
     ALTER TABLE invoices ADD COLUMN IF NOT EXISTS drafted_at timestamptz;
     ALTER TABLE invoices ADD COLUMN IF NOT EXISTS sent_at timestamptz;
     ALTER TABLE invoices ADD COLUMN IF NOT EXISTS net_value numeric;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS wo_number text;
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_invoices_wo_number ON invoices (wo_number)`);
   await db.query(`
     UPDATE invoices
     SET status = COALESCE(NULLIF(status, ''), 'draft'),
@@ -501,6 +521,9 @@ function invoiceMark(eventId, extra) {
 }
 function invoiceMarkDraft(eventId, extra) {
   return backend.invoiceMarkDraft(eventId, extra);
+}
+function invoiceCheckByWo(woNumber) {
+  return backend.invoiceCheckByWo(woNumber);
 }
 function invoiceMarkSent(eventId) {
   return backend.invoiceMarkSent(eventId);
@@ -661,6 +684,7 @@ module.exports = {
   completeInboxItem,
   addNote,
   invoiceCheck,
+  invoiceCheckByWo,
   invoiceMark,
   invoiceMarkDraft,
   invoiceMarkSent,
