@@ -389,6 +389,27 @@ async function sendInvoice(invoiceUrl) {
   return result;
 }
 
+// Manual-only — never called from the automated invoice-run path. Used to
+// void a mistaken/duplicate invoice (e.g. BUG-020: same WO on two calendar
+// events, each invoiced separately). FreeAgent allows DELETE on an invoice
+// that hasn't been marked paid.
+async function deleteInvoice(invoiceUrl) {
+  requireEnv();
+  const token = await getAccessToken();
+  const id = invoiceUrl.split('/').pop();
+  const res = await fetch(`${BASE}/invoices/${id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(`delete failed: ${res.status} ${JSON.stringify(data)}`);
+  }
+  const result = { ok: true, invoice_url: invoiceUrl, deleted: true };
+  if (require.main === module) console.log(JSON.stringify(result));
+  return result;
+}
+
 async function updateInvoice({ invoiceUrl, notes, description, comments, datedOn }) {
   requireEnv();
   const token = await getAccessToken();
@@ -476,6 +497,7 @@ if (require.main !== module) {
     createInvoice,
     sendInvoice,
     updateInvoice,
+    deleteInvoice,
   };
 } else {
 requireEnv();
@@ -533,6 +555,18 @@ switch (cmd) {
     });
     break;
   }
+  case 'delete-invoice': {
+    const args = parseArgs(rest);
+    if (!args['invoice-url']) {
+      console.error(JSON.stringify({ ok: false, error: 'delete-invoice requires --invoice-url' }));
+      process.exit(1);
+    }
+    deleteInvoice(args['invoice-url']).catch(e => {
+      console.error(JSON.stringify({ ok: false, error: e.message }));
+      process.exit(1);
+    });
+    break;
+  }
   case 'parse-notes': {
     const args = parseArgs(rest);
     if (!args.notes) {
@@ -551,7 +585,7 @@ switch (cmd) {
     break;
   }
   default:
-    console.error(JSON.stringify({ ok: false, error: `Unknown command: ${cmd || '(none)'}. Usage: freeagent.js create-invoice | update-invoice | send-invoice | parse-notes` }));
+    console.error(JSON.stringify({ ok: false, error: `Unknown command: ${cmd || '(none)'}. Usage: freeagent.js create-invoice | update-invoice | send-invoice | delete-invoice | parse-notes` }));
     process.exit(1);
 }
 }

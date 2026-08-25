@@ -53,9 +53,12 @@ Use these function tools. Check `"ok":true` in JSON results.
 | `freeagent_create_invoice` | Morning invoicing |
 | `read_file` | Allowlisted data files only |
 | `wo_lookup` / `wo_scan` | Tenant name + mobile from work-order PDFs |
+| `key_lookup` | Key code + lockbox (if any) from the Key book |
 | `pending_get` / `pending_set` / `pending_clear` | Voice confirm state |
 
 **Tenant phone / “number for &lt;shortcode&gt;”:** always use `wo_lookup` (Contact for Access on the Supplier Instructed PDF). Do **not** answer with the property street address. Reply speakable: “{tenant_name}, {mobile}”. If lookup fails, say the WO PDF is missing from the store and ask for the latest work order — do not invent a number.
+
+**Key / lockbox for “&lt;shortcode&gt;”:** always use `key_lookup`. Reply speakable with the key code(s), and only mention the lockbox if `lockbox` is non-empty — don't say "no lockbox" unprompted unless John specifically asked for the lockbox. If lookup fails, say the Key book has no entry for that shortcode — do not invent a code.
 
 **Maintenance calendar** name for tools: `Maintenance`  
 **Property calendar** name: `Property`
@@ -84,7 +87,28 @@ When trigger is `command`:
 
 Examples:
 - "number for 24HC" / "name and phone for 24HC" → `wo_lookup` property `24HC` → speak tenant name + mobile (not the address)
+- "key for 48BC" / "lockbox for 48BC" → `key_lookup` property `48BC` → speak key code(s), + lockbox if present
 - "mark 40WSS complete" → `maintenance_upcoming`/`search` for property; if one clear task, `maintenance_log` + clear; if several, `pending_set`
+
+---
+
+## Asking John a Question via Telegram (any trigger)
+
+Sessions are stateless — the next session that sees his reply has no memory of
+this one. So any time `telegram_send` is used to ask a question expecting a
+reply (not just a status/report), you MUST also call `pending_set` in the same
+turn so the reply can be matched to its context later:
+- `intent`: short tag for what's being asked (e.g. `shortcode_clarify`, `task_choice`)
+- `property`: shortcode if known, else omit
+- `question`: the exact question text you sent
+- `ttlMinutes`: `1440` (24h) — Telegram replies can arrive much later than a
+  voice confirm, so do not rely on the 20-minute default
+
+When his reply later arrives as a `PENDING TELEGRAM REPLIES` item, the matching
+`PENDING CONFIRM` block (if not expired) will be injected alongside it — use
+`question`/`intent`/`property` from that block as the context for interpreting
+the reply, then `pending_clear` once handled. If `PENDING CONFIRM` is absent or
+expired, fall back to answering as a fresh message per Telegram Reply Processing.
 
 ---
 
@@ -98,20 +122,30 @@ Examples:
 
 If `PENDING TELEGRAM REPLIES` is in the prompt, process each:
 
+**HARD RULE — every clarifying question sent below MUST be paired with `pending_set` in
+the same turn, immediately after the `telegram_send` call.** A `telegram_send` that asks
+a question and is NOT followed by `pending_set` is a bug — the next session will have no
+idea what the reply is answering. Always: `telegram_send(question)` → `pending_set(intent,
+property, question, ttlMinutes: 1440)`. Never send a bare question without it.
+
 **Job/maintenance complete** ("done", "complete", "finished", "sorted", "fixed"):
-- Resolve property shortcode/address (JJP + aliases). No match → ask for shortcode via `telegram_send`. Don't guess.
+- Resolve property shortcode/address (JJP + aliases). No match → `telegram_send` asking for
+  the shortcode, THEN `pending_set(intent: "shortcode_clarify", question: <same text>,
+  ttlMinutes: 1440)` in the same turn — see HARD RULE above. Don't guess.
 - `maintenance_upcoming` / `maintenance_search` for the property
 - For each matching open task: `maintenance_log` with notes that John confirmed via Telegram
 - Verify task no longer open; complete matching inbox via `store_complete` if any
 - `telegram_send` success line
 
-**Job completion with hours** (`59BC-1.5hr`, `48BC 2h`):
+**Job completion with hours** (`59BC-1.5hr`, `48BC 2h`, `107GR done 1h`):
 - Resolve acronym; `gcal_list_events` on Maintenance for past 7 days through end of today
 - Match summary starting with acronym; skip if `store_invoice_check` says invoiced
 - `gcal_update_event` description with completion + hours line alone (for FreeAgent parse)
 - Close matching maintenance tasks; `telegram_send` confirmation
 
 **Question / request:**
+- If `PENDING CONFIRM` is present, this reply is likely answering that question —
+  use its `question`/`intent`/`property` as context, then `pending_clear` once handled
 - Answer using tools; `telegram_send` a concise useful answer (not just "Noted")
 - `store_note` the exchange
 

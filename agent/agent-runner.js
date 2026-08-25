@@ -429,6 +429,21 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'key_lookup',
+      description:
+        'Look up the physical key code (and lockbox code if on file) for a property from the Key book. Use for “key for X”, “keycode for X”, “lockbox for X”.',
+      parameters: {
+        type: 'object',
+        properties: {
+          property: { type: 'string', description: 'Shortcode e.g. 48BC' },
+        },
+        required: ['property'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'pending_get',
       description: 'Get the active pending confirmation (if any)',
       parameters: { type: 'object', properties: {} },
@@ -468,7 +483,7 @@ const TOOLS = [
 async function executeTool(name, args, context = {}) {
   const a = args || {};
   switch (name) {
-    case 'telegram_send':
+    case 'telegram_send': {
       // Morning WO/outstanding counts are sent by the scheduler (deterministic).
       // The model previously ignored "no morning Telegram" and alarmed on the
       // stale maintenance_tasks ledger — refuse rather than trust the prompt.
@@ -480,7 +495,27 @@ async function executeTool(name, args, context = {}) {
             'WO outstanding is already sent by the scheduler; email-only if non-WO maintenance needs attention.',
         };
       }
-      return runCmd(path.join(AGENT_DIR, 'telegram.js'), ['send', a.text || '']);
+      const sendResult = await runCmd(path.join(AGENT_DIR, 'telegram.js'), ['send', a.text || '']);
+      // Deterministic fallback: the model doesn't reliably pair a clarifying
+      // question with pending_set, so if this message looks like a question
+      // and nothing already covers it, store it ourselves. A later explicit
+      // pending_set (richer intent/property/candidates) still overrides this.
+      if (sendResult && sendResult.ok && (a.text || '').includes('?')) {
+        const current = pending.getPending();
+        if (!current || current.question !== a.text) {
+          try {
+            pending.setPending({
+              intent: 'telegram_question',
+              question: a.text,
+              ttlMinutes: 1440,
+            });
+          } catch (e) {
+            // non-fatal — don't fail the send over bookkeeping
+          }
+        }
+      }
+      return sendResult;
+    }
     case 'maintenance_upcoming': {
       const argv = ['upcoming'];
       if (a.days != null) argv.push('--days', String(a.days));
@@ -612,6 +647,8 @@ async function executeTool(name, args, context = {}) {
     }
     case 'wo_scan':
       return runCmd(path.join(AGENT_DIR, 'wo.js'), ['scan']);
+    case 'key_lookup':
+      return runCmd(path.join(AGENT_DIR, 'keys.js'), ['lookup', '--property', a.property || '']);
     case 'pending_get':
       return { ok: true, pending: pending.getPending() };
     case 'pending_set':

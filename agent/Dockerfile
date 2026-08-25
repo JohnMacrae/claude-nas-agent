@@ -26,6 +26,9 @@ COPY wo.js ./
 COPY wo-colour.js ./
 COPY wo-report.js ./
 COPY invoice-run.js ./
+COPY gmail.js ./
+COPY wo-gmail-scan.js ./
+COPY keys.js ./
 
 RUN chown -R agent:agent /agent
 

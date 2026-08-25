@@ -14,25 +14,27 @@ Work-order management and invoicing for John Macrae's 60-property Colchester ren
 
 | | `property-agent` (this folder) | `property_invoicing` (`../property_invoicing/`) |
 |---|---|---|
-| LLM | **`google/gemini-2.5-flash`** via OpenRouter | **Claude**, via `claude --print` |
+| LLM | OpenRouter, primary model + fallback chain in `.env` (`AGENT_MODEL`/`AGENT_MODEL_FALLBACK`, not hardcoded — see `NEXT.md`) | **Claude**, via `claude --print` |
 | Runtime | `agent/agent-runner.js` — custom tool loop | Claude Code CLI, `--max-budget-usd 0.50` |
 | Tools | Registered tools only — **no Bash, no MCP client** | Bash (allowlisted) + Claude account connectors |
 | Schedule | morning 05:00, property-check 07:00–15:00 /2h, weekdays | 06:00 Mon–Fri, single shot |
 
 `property-agent` **has no Bash and no MCP client** — Claude Code was removed from its image on 2026-07-18 and the `~/.claude` mounts dropped. It cannot be told to "run a script". Anything new it must do has to be a registered tool in `agent/agent-runner.js` (`gcal_*`, `store_*`, `wo_lookup`, `telegram_send`, …).
 
-Consequence: **give it Gmail access by bind-mounting `gmail-mcp/gmail_client.py` and calling it directly**, as `mail-reader`, `EICR`, `BL_Audit` and `lead-tracker` all do. Not via MCP.
+Consequence: any new Gmail-touching capability must be Node, not a Python subprocess — no Python interpreter exists in this image. As of 2026-08-25, work-order capture (`agent/gmail.js` + `agent/wo-gmail-scan.js`) does this natively: raw-fetch OAuth against a mounted `gmail-mcp` token file (`/gmail-config/token.json`), mirroring `gcal.js`'s existing Calendar-OAuth pattern — not a `gmail_client.py` bind-mount/subprocess (that pattern is Python-only, used by `mail-reader`/`EICR`/`BL_Audit`, and has no working precedent for a Node caller). Gmail access is still not exposed to the LLM as a tool — WO capture is deterministic, scheduler-owned, and runs before the LLM session even starts (see the pipeline below).
 
 `isWorkday()` (`agent/scheduler.js:75`) gates the schedule on weekday + UK bank holidays. Gaps at weekends are expected, not faults.
 
 ## The pipeline
 
 ```
-Rentopia email  →  mail-reader/work_order_processor.py  →  POST /inbox (172.17.0.1:3005)
-                →  property-agent  →  Maintenance calendar event (+ WO PDF, + Paperless)
+Rentopia email  →  agent/wo-gmail-scan.js (in-process, scheduled)  →  inbox item (store.addInboxItem)
+                →  property-agent session  →  Maintenance calendar event (+ WO PDF)
                 →  property-agent invoice-run (06:00)  →  FreeAgent draft (complete + billable lines)
                 →  invoice-run (≥24h)  →  FreeAgent email to jramacrae@gmail.com
 ```
+
+As of 2026-08-25, WO capture is native to property-agent (`agent/gmail.js` + `agent/wo-gmail-scan.js`, scheduled 05:30/07:45.../17:45 in `scheduler.js`) — no separate container, no cross-compose HTTP hop. `mail-reader`'s `work-order-processor` container (the old Python path, same schedule) is still running in **parallel** for verification; both are dedup-safe (same `order_number` uniqueness) and safe to run together. Once a few days of clean agreement are confirmed, `work-order-processor` gets retired — see `NEXT.md` for status. `mail-reader`'s `gmail-processor` service (Rentopia statement parsing / Paperless filing — unrelated) is untouched either way.
 
 `property_invoicing` morning create is disabled; do not re-enable without removing property-agent invoice-run.
 
