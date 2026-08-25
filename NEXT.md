@@ -1,6 +1,14 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-08-25** (agent revived + model fallback added — see below)
+Last updated: **2026-08-25** (WO Gmail capture folded in — see below)
+
+## Work-order Gmail capture folded into property-agent — 2026-08-25 (`dc050e4`)
+
+property-agent now captures work orders directly (new `agent/gmail.js` + `agent/wo-gmail-scan.js`, native Node port — see commit message for full detail). Verified 0 mismatches against Python's parser/shortcode logic on all 48 fixture PDFs in `output/work_orders`, and a live dry-run matched today's earlier Python-container capture exactly.
+
+**Currently in parallel-run**: mail-reader's `work-order-processor` container is still running (`docker-compose.yml` at `/volume1/docker/mail-reader`, cron slots 05:30/07:45.../17:45) alongside property-agent's own new schedule (same times, in-process). Both are safe together — `store.addInboxItem`'s `order_number` uniqueness means whichever finds a WO first wins, the other no-ops. **Not yet retired** — plan (see `/home/john/.claude/plans/scope-rolling-the-otehr-temporal-music.md`) is to compare logs for 2-3 days across all seven schedule slots before removing the `work-order-processor` service block from mail-reader's compose file. `gmail_pdf_processor.py`/`gmail-processor` (Rentopia statement parsing, unrelated) is untouched either way.
+
+**Next step**: after a few days of clean parallel-run agreement, remove `work-order-processor` from `mail-reader/docker-compose.yml` and archive (don't delete) `work_order_processor.py`.
 
 ## Agent was down 2026-08-23 → 2026-08-25 — fixed
 
