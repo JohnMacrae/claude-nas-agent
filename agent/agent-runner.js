@@ -429,6 +429,21 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'key_lookup',
+      description:
+        'Look up the physical key code (and lockbox code if on file) for a property from the Key book. Use for “key for X”, “keycode for X”, “lockbox for X”.',
+      parameters: {
+        type: 'object',
+        properties: {
+          property: { type: 'string', description: 'Shortcode e.g. 48BC' },
+        },
+        required: ['property'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'pending_get',
       description: 'Get the active pending confirmation (if any)',
       parameters: { type: 'object', properties: {} },
@@ -612,6 +627,8 @@ async function executeTool(name, args, context = {}) {
     }
     case 'wo_scan':
       return runCmd(path.join(AGENT_DIR, 'wo.js'), ['scan']);
+    case 'key_lookup':
+      return runCmd(path.join(AGENT_DIR, 'keys.js'), ['lookup', '--property', a.property || '']);
     case 'pending_get':
       return { ok: true, pending: pending.getPending() };
     case 'pending_set':

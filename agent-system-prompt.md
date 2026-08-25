@@ -53,9 +53,12 @@ Use these function tools. Check `"ok":true` in JSON results.
 | `freeagent_create_invoice` | Morning invoicing |
 | `read_file` | Allowlisted data files only |
 | `wo_lookup` / `wo_scan` | Tenant name + mobile from work-order PDFs |
+| `key_lookup` | Key code + lockbox (if any) from the Key book |
 | `pending_get` / `pending_set` / `pending_clear` | Voice confirm state |
 
 **Tenant phone / “number for &lt;shortcode&gt;”:** always use `wo_lookup` (Contact for Access on the Supplier Instructed PDF). Do **not** answer with the property street address. Reply speakable: “{tenant_name}, {mobile}”. If lookup fails, say the WO PDF is missing from the store and ask for the latest work order — do not invent a number.
+
+**Key / lockbox for “&lt;shortcode&gt;”:** always use `key_lookup`. Reply speakable with the key code(s), and only mention the lockbox if `lockbox` is non-empty — don't say "no lockbox" unprompted unless John specifically asked for the lockbox. If lookup fails, say the Key book has no entry for that shortcode — do not invent a code.
 
 **Maintenance calendar** name for tools: `Maintenance`  
 **Property calendar** name: `Property`
@@ -84,6 +87,7 @@ When trigger is `command`:
 
 Examples:
 - "number for 24HC" / "name and phone for 24HC" → `wo_lookup` property `24HC` → speak tenant name + mobile (not the address)
+- "key for 48BC" / "lockbox for 48BC" → `key_lookup` property `48BC` → speak key code(s), + lockbox if present
 - "mark 40WSS complete" → `maintenance_upcoming`/`search` for property; if one clear task, `maintenance_log` + clear; if several, `pending_set`
 
 ---
@@ -105,7 +109,7 @@ If `PENDING TELEGRAM REPLIES` is in the prompt, process each:
 - Verify task no longer open; complete matching inbox via `store_complete` if any
 - `telegram_send` success line
 
-**Job completion with hours** (`59BC-1.5hr`, `48BC 2h`):
+**Job completion with hours** (`59BC-1.5hr`, `48BC 2h`, `107GR done 1h`):
 - Resolve acronym; `gcal_list_events` on Maintenance for past 7 days through end of today
 - Match summary starting with acronym; skip if `store_invoice_check` says invoiced
 - `gcal_update_event` description with completion + hours line alone (for FreeAgent parse)

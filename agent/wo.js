@@ -366,7 +366,7 @@ async function main() {
   console.log(JSON.stringify(result));
 }
 
-module.exports = { scan, lookup, list, parseWoText, resolveShortcode, loadJjp };
+module.exports = { scan, lookup, list, parseWoText, resolveShortcode, loadJjp, norm, houseNumber };
 
 if (require.main === module) {
   main().catch((e) => {
