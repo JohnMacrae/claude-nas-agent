@@ -1,6 +1,18 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-08-25** (key_lookup added — see below)
+Last updated: **2026-08-25** (BUG-020 double-invoice caught + fixed — action needed, see below)
+
+## ⚠️ ACTION NEEDED: void duplicate invoice #132 in FreeAgent
+
+59BC/WO001557 got billed twice (#131 `93459612` and #132 `93552771`, £100/2hrs each, both dated 2026-08-10) — two separate Maintenance calendar events exist for the same WO, and `invoice-run`'s dedup only checked calendar `event_id`, not WO number. Both invoices only emailed to `jramacrae@gmail.com` (confirmed — no client was double-billed), but both are real "Open" invoices in FreeAgent's own books now.
+
+**John needs to void #132 directly in the FreeAgent web UI** — `freeagent.js delete-invoice` (new CLI, see below) only works on Draft-status invoices; FreeAgent's API returns 409 on an already-Open/sent one, confirmed by testing. Once voided, also worth deciding which of the two duplicate calendar events (`6aalj...` "Replace Hot Water Timer - 2hr" vs `d05ps...` "Change Timer - 1hr\nInvestigate Leak...") should be deleted/merged so it stops showing as two open WOs.
+
+**Also worth a look, not urgent**: `30RC - WO001496` has the same two-calendar-events-one-WO pattern — the new dedup fix (below) caught it before it could double-bill, but the duplicate calendar event is still there.
+
+## Invoice-run dedupes by WO number now, not just event_id — 2026-08-25 (`339395c`)
+
+Fixes BUG-020. `store.js` invoices ledger gained a `wo_number` column (backfilled onto all 31 existing rows) and `invoiceCheckByWo()`; `invoice-run.js`'s `createPass` skips (`already_ledger_by_wo`) when a different calendar event already has that WO invoiced. `freeagent.js` gained `deleteInvoice`/`delete-invoice` (manual-only, never called from the automated path) — works for Draft invoices, not Open/sent ones (see above).
 
 ## Key/lockbox lookup by shortcode — 2026-08-25 (`384a738`)
 
