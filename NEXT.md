@@ -15,18 +15,33 @@ Two independent breakages, both now resolved:
 
 `AGENT_MODEL_FALLBACK` (comma-separated, optional) is tried in order if `AGENT_MODEL`'s request fails for any reason (model pulled/renamed, key limit, backend unreachable, provider outage). Each entry is either a bare model (same backend as `AGENT_MODEL`) or `backend:model` (e.g. `openrouter:google/gemini-2.5-flash`) to fail over to a different backend entirely. Runner logs which backend+model actually served each request; the result JSON's `backend`/`model` fields report what succeeded, not just the configured primary.
 
-**Primary is now Ollama on shack** (`qwen2.5:7b-instruct-q4_K_M`), confirmed reachable 2026-08-25 (port 11434 open, `ollama serve` running). Tried `qwen3:4b` first — worked but far too slow for scheduled use (7 minutes for one Telegram tool-call round trip vs qwen2.5:7b-instruct's 8 seconds for the same test). Falls over to OpenRouter if shack is down or the model errors.
+**Tried Ollama on shack as primary, reverted same day — data-corruption risk, not just slow.**
+
+`qwen3:4b` worked but was far too slow for scheduled use (7 minutes for one Telegram tool-call round trip). Switched to `qwen2.5:7b-instruct-q4_K_M` — fast (8s) on a synthetic test, but on a **real property-check run with 4 live work orders** it: called `maintenance_log` (the recurring-task ledger tool) using inbox-item IDs as `task_id`, **fabricated fictitious repair-completion notes** ("Temp repair completed, issue resolved until next inspection" — no such repair happened), hit a DB foreign-key error twice, then gave up. It never created the Maintenance calendar events, never sent the required 🔴 urgent Telegram alerts for the two urgent WOs (78BC electrics + water ingress, 16AM smoke alarm), and never closed the inbox items — silently, with a plausible-sounding final reply. Confirmed via `/status` (`openInbox` still 4) and an empty Maintenance calendar query.
+
+Had to bypass it and re-run the same session manually forced onto OpenRouter (`~deepseek/deepseek-v4-flash-latest`), which processed all 4 correctly in 36s: 4 calendar events, all inbox items closed, urgent Telegram alert sent (`message_id:385`).
+
+**Reverted to OpenRouter as primary same day.** Ollama/shack dropped from the fallback chain entirely — a confidently-wrong result that corrupts state is worse than an honest failure, so it's not worth keeping as a fallback either. If shack is revisited later, any candidate model needs to be validated against a real multi-tool-call session (not just a trivial "reply OK" test) before it's trusted with live work orders.
 
 Current live `.env` (not committed — gitignored):
 ```
-LLM_BACKEND=ollama
+LLM_BACKEND=openrouter
 OLLAMA_BASE_URL=http://shack.beetal-carp.ts.net:11434
-AGENT_MODEL=qwen2.5:7b-instruct-q4_K_M
+AGENT_MODEL=~deepseek/deepseek-v4-flash-latest
 AGENT_MODEL_FALLBACK=openrouter:~deepseek/deepseek-v4-flash-latest,openrouter:google/gemini-2.5-flash,openrouter:minimax/minimax-m2.7:free,openrouter:nvidia/nemotron-3-super-120b-a12b:free
 ```
+(First fallback entry is redundant with the primary and gets deduped automatically by `agent-runner.js` — harmless, left as-is.)
 
-Watch: shack is John's Windows PC — if it's off/asleep/rebooting, `LLM_BACKEND=ollama` sessions fall through to OpenRouter automatically (tested — see commit). No action needed unless the OpenRouter fallback chain is also exhausted.
-Last two fallbacks are free-tier OpenRouter models (confirmed working, no spend-limit exposure) — genuine last-resort if both paid models are unavailable. Verified end-to-end by forcing a bogus primary model and confirming the runner logs the fallthrough correctly.
+Last two fallbacks are free-tier OpenRouter models (confirmed working, no spend-limit exposure) — genuine last-resort if both paid models are unavailable. Fallback mechanism itself verified end-to-end by forcing a bogus primary model and confirming the runner logs the fallthrough correctly.
+
+### Also fixed same session: Gmail token expiry was blocking new work-order capture
+
+Separate from the Calendar token (different account/scope): the `jramacrae` Gmail token feeding `gmail-pdf-processor`/`work-order-processor` had been dead since 2026-07-29 (`invalid_grant`), failing silently every night at 02:00. John re-ran `reauth.bat` from the laptop. Backlog caught up manually:
+```
+docker exec gmail-pdf-processor python3 /app/gmail_pdf_processor.py       # files PDFs to Paperless
+docker exec -e WO_DAYS_TO_SEARCH=7 work-order-processor python3 work_order_processor.py   # POSTs WOs to /inbox
+```
+Note: `gmail-pdf-processor` and `work-order-processor` are **two different containers** built from the same image (`/volume1/docker/mail-reader/docker-compose.yml`) — only `work-order-processor` has `PROPERTY_AGENT_URL` set correctly (`http://172.17.0.1:3005`); running the WO script inside `gmail-pdf-processor` fails with a DNS error (`property-agent` hostname unresolvable — wrong network) since it defaults to `http://property-agent:3001`. Use `work-order-processor` for anything WO-related.
 
 ---
 
