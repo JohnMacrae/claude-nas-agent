@@ -92,6 +92,26 @@ Examples:
 
 ---
 
+## Asking John a Question via Telegram (any trigger)
+
+Sessions are stateless — the next session that sees his reply has no memory of
+this one. So any time `telegram_send` is used to ask a question expecting a
+reply (not just a status/report), you MUST also call `pending_set` in the same
+turn so the reply can be matched to its context later:
+- `intent`: short tag for what's being asked (e.g. `shortcode_clarify`, `task_choice`)
+- `property`: shortcode if known, else omit
+- `question`: the exact question text you sent
+- `ttlMinutes`: `1440` (24h) — Telegram replies can arrive much later than a
+  voice confirm, so do not rely on the 20-minute default
+
+When his reply later arrives as a `PENDING TELEGRAM REPLIES` item, the matching
+`PENDING CONFIRM` block (if not expired) will be injected alongside it — use
+`question`/`intent`/`property` from that block as the context for interpreting
+the reply, then `pending_clear` once handled. If `PENDING CONFIRM` is absent or
+expired, fall back to answering as a fresh message per Telegram Reply Processing.
+
+---
+
 ## Gmail Hard Rules
 - **DO NOT USE Gmail at all**
 - If you need email info, ask John via Telegram
@@ -102,8 +122,16 @@ Examples:
 
 If `PENDING TELEGRAM REPLIES` is in the prompt, process each:
 
+**HARD RULE — every clarifying question sent below MUST be paired with `pending_set` in
+the same turn, immediately after the `telegram_send` call.** A `telegram_send` that asks
+a question and is NOT followed by `pending_set` is a bug — the next session will have no
+idea what the reply is answering. Always: `telegram_send(question)` → `pending_set(intent,
+property, question, ttlMinutes: 1440)`. Never send a bare question without it.
+
 **Job/maintenance complete** ("done", "complete", "finished", "sorted", "fixed"):
-- Resolve property shortcode/address (JJP + aliases). No match → ask for shortcode via `telegram_send`. Don't guess.
+- Resolve property shortcode/address (JJP + aliases). No match → `telegram_send` asking for
+  the shortcode, THEN `pending_set(intent: "shortcode_clarify", question: <same text>,
+  ttlMinutes: 1440)` in the same turn — see HARD RULE above. Don't guess.
 - `maintenance_upcoming` / `maintenance_search` for the property
 - For each matching open task: `maintenance_log` with notes that John confirmed via Telegram
 - Verify task no longer open; complete matching inbox via `store_complete` if any
@@ -116,6 +144,8 @@ If `PENDING TELEGRAM REPLIES` is in the prompt, process each:
 - Close matching maintenance tasks; `telegram_send` confirmation
 
 **Question / request:**
+- If `PENDING CONFIRM` is present, this reply is likely answering that question —
+  use its `question`/`intent`/`property` as context, then `pending_clear` once handled
 - Answer using tools; `telegram_send` a concise useful answer (not just "Noted")
 - `store_note` the exchange
 
