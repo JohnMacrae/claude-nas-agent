@@ -1,61 +1,60 @@
 # NEXT — Property Agent / Property Docs
 
-Last updated: **2026-08-25**
+Last updated: **2026-09-04**
 
 > Older detail (Stage A–F invoice-automation plan, the 2026-07 decouple-from-OB1 work,
-> WO→Paperless bridge fixes, etc.) has been trimmed from this file to keep it current —
-> it's all still in git history: `git log -- NEXT.md` / `git show 3a3731b:NEXT.md` for the
-> last full version before this trim.
+> WO→Paperless bridge fixes, Telegram pending-question fix, etc.) has been trimmed from this
+> file to keep it current — it's all still in git history: `git log -- NEXT.md`.
 
 ## Current state
 
-Branch **`fix/wo-paperless-bridge-handoff`**, pushed, working tree clean.
-Latest commit: `77632f2` — Telegram pending-question fix (below).
+Branch **`main`**, pushed, working tree has one unrelated uncommitted change:
+`compose.yml` adds `GOOGLE_REFRESH_TOKEN_FILE=/gmail-config/calendar-refresh-token` to the
+property-agent service env — pre-existing at the start of this session, not part of the
+invoice-run work below, not yet investigated or committed.
 
 ## What just happened
 
-**Telegram questions now survive across sessions (`77632f2`).** Root problem: sessions are
-stateless — when the agent asks John a clarifying question via `telegram_send` and his reply
-arrives later, it's processed in a brand-new session with zero memory of what was asked.
-`pending_set`/`pending_get` (`agent/pending.js`) already existed for exactly this (question +
-context, injected as `PENDING CONFIRM` alongside `PENDING TELEGRAM REPLIES` — see
-`scheduler.js:327-334`), but was only wired into the voice-command flow.
+**Invoice-run now applies a 1-hour minimum charge instead of skipping unbillable completions.**
+John noticed the daily Telegram report listing 12 completed WOs as "no billable lines in
+notes" and asked why — traced to `agent/invoice-run.js` calling
+`freeagent.notesToInvoiceItems`/`createInvoice` with `allowMinimum: false`, so a completed job
+whose notes had no parseable £/hours was skipped rather than billed. He confirmed he wants the
+existing minimum-hour fallback (already in `freeagent.js`, previously only reachable via manual
+`create-invoice`) applied automatically by the automated run too.
 
-- First fix attempt was prompt-only (`agent-system-prompt.md`): told the model to always pair
-  a `telegram_send` question with `pending_set`, including an inline "HARD RULE". **Verified
-  live, twice, that the cheap model (`deepseek-v4-flash`) ignored it both times.**
-- Real fix is in code: `agent/agent-runner.js`'s `telegram_send` handler now auto-calls
-  `pending_set` itself whenever the sent text contains `?` and nothing already covers it —
-  no model cooperation required. An explicit `pending_set` from the model (richer intent/
-  property/candidates) still overrides the auto-fallback when it fires.
-- Retested live a third time after the code fix: confirmed `pending-confirm.json` populated
-  automatically even though the model again sent a bare question. Test artifacts (fake
-  Telegram replies, the auto-set pending-confirm) cleaned up — real Telegram messages did go
-  to John's phone during testing (two synthetic clarifying questions), already flagged to him
-  as noise, no action needed on them.
-- System prompt also gained: "Question / request" replies now check `PENDING CONFIRM` for
-  context before answering, and the shortcode-clarify path is explicit about the pairing.
-
-**78BC — WO001564 (no water supply) confirmed still open by John, chase up tomorrow
-(2026-08-26).** WO001562 (fuse box/water dripping, same property) is done. Logged via
-`store_note` (id `44504a87-6811-428a-99c9-fbcaa3b7fa0d`) — no code action needed, just a
-human follow-up. Maintenance calendar will keep surfacing it via property-check sweeps in
-the meantime.
+- `agent/invoice-run.js`: both calls now pass `allowMinimum: true`. Removed the now-dead
+  `no_billable_lines` skip branch and its Telegram report line — `billableItems` can no longer
+  come back empty once the minimum fallback is on, so that reason can never fire. The
+  "Completed, unpaid" report section now only ever reports `create_failed` (a real FreeAgent
+  API error).
+- `CLAUDE.md` automated-invoicing bullet updated to describe the minimum-charge fallback.
+- Verified live: `docker cp`'d the changed file into the running container and ran
+  `node invoice-run.js --dry-run --from 2026-08-01` — confirmed WO001562/WO001564/WO001563 (the
+  previously-skipped 78BC/198C jobs) now draft at £70.00 / 1hr instead of skipping.
+- **Change is live in the running container via `docker cp` fast path only — image not yet
+  rebuilt.** Per standing note below, rebuild so the image matches source before this is
+  considered durable (a container restart/recreate before rebuild would revert to the old
+  behaviour).
 
 ## Next actions
 
-1. **Chase 78BC WO001564 tomorrow (2026-08-26)** — no water supply, still open.
-2. Watch the next few real (non-test) Telegram question/reply round-trips to confirm the
-   `pending_set` auto-fallback holds up outside a synthetic test.
-3. WO-capture parallel run (property-agent native vs `mail-reader`'s `work-order-processor`)
+1. **Rebuild the property-agent image** so it matches the `docker cp`'d source (fast-path
+   change will not survive a container recreate otherwise).
+2. Watch the next real invoice-run (06:00) to confirm minimum-charge drafts create cleanly in
+   FreeAgent and look right to John before they email at 24h.
+3. Investigate/decide on the uncommitted `compose.yml` change (see Current state) — commit or
+   revert.
+4. WO-capture parallel run (property-agent native vs `mail-reader`'s `work-order-processor`)
    — compare a few more days of logs before retiring the old Python container.
-4. Confirm invoice-run is still emailing drafts ≥24h old cleanly (last known-good state:
-   2026-08-12 backlog, BUG-020 dedup fix landed 2026-08-25).
 
 ## Do not re-litigate
 
 - **Maintenance calendar only** for invoicing — Property calendar carries Rentr lettings
   viewings, never invoice those.
+- **Automated invoice-run now bills every completed job** — either parsed billable lines, or a
+  1-hour minimum charge if notes have none. There is no more "completed but unbillable, skip"
+  state in the automated path (2026-09-04 decision, John confirmed explicitly).
 - **The local `ob1` container is not a dependency** — not on a reachable network, nothing
   reads `OPEN_BRAIN_MCP_URL`.
 - **`DATABASE_URL` is correct** — `ECONNREFUSED` at boot is a harmless one-shot startup race
@@ -73,14 +72,12 @@ the meantime.
 
 - `BUGS.md`, `WORK_ORDERS_OUTSTANDING.html`, `agent/JJP_Property_List.md` — **local-only,
   gitignored**
-- `agent/agent-runner.js` — tool definitions + `executeTool`; today's fix is in the
-  `telegram_send` case
-- `agent/pending.js` — single-slot pending-confirm state (question/intent/property/TTL)
-- `agent/scheduler.js` — HTTP endpoints, session launch + `PENDING CONFIRM`/`PENDING TELEGRAM
-  REPLIES` injection (`:280-335`)
-- `agent-system-prompt.md` — "Asking John a Question via Telegram" + "Telegram Reply
-  Processing" sections
-- `agent/store.js` — `addTelegramReply`/`listPendingReplies`/`addNote`, Postgres-backed when
-  `DATABASE_URL` set
+- `agent/invoice-run.js` — deterministic complete→draft→email-after-24h run; today's change is
+  the `allowMinimum: true` switch and the removed `no_billable_lines` skip path
+- `agent/freeagent.js` — `notesToInvoiceItems`/`createInvoice`/minimum-charge fallback
+  (`freeagent.js:259-266`)
+- `agent/wo-report.js` / `agent/wo-colour.js` — separate "still open" report; shares the
+  `done`/`complete[d]`/`cancelled` completion heuristic with invoice-run but has no concept of
+  billing state — a job marked done never appears there regardless of invoicing outcome
 - Maintenance calendar: `963dbd01a359d150a2ba10371bf80a30dc448da1100abb14ab750966a9e8a547@group.calendar.google.com`
 - Property calendar: `jj52rrbqum0q362phqmsjp20uc@group.calendar.google.com`

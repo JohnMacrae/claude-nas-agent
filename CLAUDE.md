@@ -30,7 +30,7 @@ Consequence: any new Gmail-touching capability must be Node, not a Python subpro
 ```
 Rentopia email  →  agent/wo-gmail-scan.js (in-process, scheduled)  →  inbox item (store.addInboxItem)
                 →  property-agent session  →  Maintenance calendar event (+ WO PDF)
-                →  property-agent invoice-run (06:00)  →  FreeAgent draft (complete + billable lines)
+                →  property-agent invoice-run (06:00)  →  FreeAgent draft (complete → billable lines, or 1hr minimum)
                 →  invoice-run (≥24h)  →  FreeAgent email to jramacrae@gmail.com
 ```
 
@@ -50,7 +50,7 @@ As of 2026-08-25, WO capture is native to property-agent (`agent/gmail.js` + `ag
 ## Safety rules
 
 - **Never create, amend or delete a FreeAgent invoice without explicit approval** outside the automated `invoice-run` path. Manual `freeagent.js create-invoice` writes to live accounts. Read-only inspection is fine — use `tools/fa_list.js`.
-- **Automated invoicing** (`agent/invoice-run.js`, morning + `POST /invoice-run`): drafts a FreeAgent invoice when a Maintenance event description has `done`/`complete`/`completed` at line/sentence start **and** notes parse to ≥1 billable line (hours or £). No category skips. Cancelled jobs are not invoiced. Drafts are emailed to `jramacrae@gmail.com` only after **24 hours** in ledger status `draft`.
+- **Automated invoicing** (`agent/invoice-run.js`, morning + `POST /invoice-run`): drafts a FreeAgent invoice when a Maintenance event description has `done`/`complete`/`completed` at line/sentence start. Notes that parse to ≥1 billable line (hours or £) are billed as written; notes with none fall back to a 1-hour minimum charge (`allowMinimum: true`, changed 2026-09-04 — previously these were skipped and reported as "no billable lines in notes"). No category skips. Cancelled jobs are not invoiced. Drafts are emailed to `jramacrae@gmail.com` only after **24 hours** in ledger status `draft`.
 - Dedup is by calendar `event_id` in the `invoices` ledger. Same WO on two events can still double-bill (BUG-020).
 - Invoice numbering is sequential — check continuity before manual creates.
 - Do not change Docker ports, Tailscale, DNS or firewall without explicit authorisation.

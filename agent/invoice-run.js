@@ -3,9 +3,10 @@
 //
 //   node invoice-run.js [--dry-run] [--create-only] [--send-only] [--from YYYY-MM-DD] [--send-after-hours 24]
 //
-// Create draft when description has done/complete[d] (not cancelled) AND notes
-// parse to ≥1 billable line. Email drafts that have been ledger-status draft
-// for ≥ send-after-hours (default 24).
+// Create draft when description has done/complete[d] (not cancelled). Notes
+// that parse to no billable line fall back to a 1-hour minimum charge
+// (freeagent.js notesToInvoiceItems, allowMinimum: true). Email drafts that
+// have been ledger-status draft for ≥ send-after-hours (default 24).
 
 const fs = require('fs');
 const path = require('path');
@@ -182,12 +183,7 @@ async function createPass({ events, jjp, dryRun }) {
     }
 
     const notes = event.description || '';
-    const items = freeagent.notesToInvoiceItems(notes, event.summary, { allowMinimum: false });
-    const billable = freeagent.billableItems(items);
-    if (!billable.length) {
-      skipped.push({ event_id: event.id, summary: event.summary, reason: 'no_billable_lines' });
-      continue;
-    }
+    const items = freeagent.notesToInvoiceItems(notes, event.summary, { allowMinimum: true });
 
     const code = shortcodeOf(event.summary);
     const address = (code && jjp.get(code)) || null;
@@ -218,7 +214,7 @@ async function createPass({ events, jjp, dryRun }) {
         address,
         datedOn,
         comments,
-        allowMinimum: false,
+        allowMinimum: true,
       });
       const record = await store.invoiceMarkDraft(event.id, {
         acronym: code || null,
@@ -366,10 +362,10 @@ async function run(opts = {}) {
 }
 
 // "Invoiced" = has a FreeAgent invoice, draft or sent (drafting counts as
-// invoiced — the 24h hold is a review window, not a billing gap).
-// "Unpaid" here means completed but NOT invoiced: notes didn't parse to a
-// billable line, or FreeAgent create failed — these need a manual look,
-// and previously silently vanished from the report.
+// invoiced — the 24h hold is a review window, not a billing gap). Notes with
+// no parseable billable line fall back to a 1-hour minimum charge, so they're
+// invoiced too now. "Unpaid" here means completed but NOT invoiced because
+// the FreeAgent create call itself failed — needs a manual look.
 function formatTelegramReport(result) {
   const lines = [];
 
@@ -389,15 +385,11 @@ function formatTelegramReport(result) {
     if (invoiced.length > 20) lines.push(`• …+${invoiced.length - 20} more`);
   }
 
-  const unpaid = result.skipped.filter(
-    (s) => s.reason === 'no_billable_lines' || s.reason === 'create_failed'
-  );
+  const unpaid = result.skipped.filter((s) => s.reason === 'create_failed');
   if (unpaid.length) {
     lines.push(`⚠️ Completed, unpaid (${unpaid.length}):`);
     for (const u of unpaid.slice(0, 20)) {
-      const why = u.reason === 'no_billable_lines'
-        ? 'no billable lines in notes'
-        : `FreeAgent create failed: ${(u.error || 'unknown error').slice(0, 80)}`;
+      const why = `FreeAgent create failed: ${(u.error || 'unknown error').slice(0, 80)}`;
       lines.push(`• ${u.summary || u.event_id} — ${why}`);
     }
     if (unpaid.length > 20) lines.push(`• …+${unpaid.length - 20} more`);
