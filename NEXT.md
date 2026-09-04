@@ -8,74 +8,70 @@ Last updated: **2026-09-04**
 
 ## Current state
 
-Branch **`main`**, pushed. Working tree has one unrelated uncommitted change:
-`compose.yml` adds `GOOGLE_REFRESH_TOKEN_FILE=/gmail-config/calendar-refresh-token` to the
-property-agent service env — pre-existing at the start of this session, not part of the
-invoice-run work below, not yet investigated or committed.
+Branch **`main`**, pushed, commits `af66ba5` and `b08f5bf`. Working tree has one unrelated
+uncommitted change: `compose.yml` adds
+`GOOGLE_REFRESH_TOKEN_FILE=/gmail-config/calendar-refresh-token` to the property-agent service
+env — pre-existing at the start of this session, not part of the invoice-run work below, not
+yet investigated or committed.
 
-**Three code changes are live in the running container via `docker cp` fast path but the
-image has not been rebuilt yet** — a container recreate before rebuilding would silently
-revert all of this:
-- `agent/invoice-run.js` — minimum-charge fallback (commit `af66ba5`, pushed)
+**All three code changes are committed and pushed but only `docker cp`'d into the running
+container — the image has not been rebuilt.** A container recreate before rebuilding would
+silently revert to the old (skip-and-underbill) behaviour:
+- `agent/invoice-run.js` — minimum-charge fallback (`af66ba5`)
 - `agent/freeagent.js` — `extractHours` mid-sentence fallback + `ensureCompletionHoursLine`
-  (uncommitted)
-- `agent/agent-runner.js` — `gcal_update_event` now normalizes completion notes via
-  `ensureCompletionHoursLine` (uncommitted)
+  (`b08f5bf`)
+- `agent/agent-runner.js` — `gcal_update_event` normalizes completion notes via
+  `ensureCompletionHoursLine` (`b08f5bf`)
 
 ## What just happened
 
-**Chased a Telegram report discrepancy through two related fixes, then reprocessed the
-backlog.**
+**Chased a Telegram report discrepancy through two related fixes, reprocessed the backlog,
+then verified every draft against the fixed parser.**
 
-1. **Automated invoice-run was silently skipping completed-but-unbillable jobs.** John
-   noticed 12 WOs reported "no billable lines in notes" and asked why. Root cause:
-   `invoice-run.js` called `freeagent.js` with `allowMinimum: false`, so a completed job
-   with no parseable £/hours in its notes was skipped rather than billed (the existing
-   minimum-hour fallback in `freeagent.js` was only reachable from manual
-   `create-invoice`). John confirmed he wants the minimum applied automatically. Fixed,
-   verified via dry-run, committed as `af66ba5`, pushed.
-2. **Manually reran `invoice-run.js` (not dry-run)** for the full window to actually draft
-   the 12 backlog WOs rather than wait for tomorrow's 06:00 run. All 12 now have FreeAgent
-   draft invoices, refs 132–143 (see table in chat — WO001560/561/562/564/563 and
+1. **Automated invoice-run was silently skipping completed-but-unbillable jobs.** Root cause:
+   `invoice-run.js` called `freeagent.js` with `allowMinimum: false`, so a completed job with
+   no parseable £/hours was skipped rather than billed. John confirmed he wants the existing
+   minimum-hour fallback applied automatically. Fixed, committed `af66ba5`.
+2. **Manually reran `invoice-run.js` (not dry-run)** to draft the 12 backlog WOs immediately.
+   All 12 got FreeAgent drafts, refs 132–143 (WO001560/561/562/564/563,
    WO001501/513/519/518/517/522/524).
-3. **John spotted one of the 12 (WO001560, ref 132) was actually reported at 2hrs via
-   Telegram ("198c - done -2hrs") but drafted at the 1hr minimum.** Traced to the calendar
-   event's actual description: `"Complete — confirmed by John via Telegram 2026-08-26.
-   2hrs."` — free-text prose, not the clean "Complete Nhr" line the "Job completion with
-   hours" system-prompt path calls for. The cheap model (`deepseek-v4-flash`) matched an
-   input shape nearly identical to its own worked example (`107GR done 1h`,
-   `agent-system-prompt.md:108`) but still didn't format the note correctly — same
-   instruction-non-adherence class as the `pending_set` issue fixed in `77632f2`. Because
-   step 1's minimum-charge fallback is now live, this kind of miss silently underbills
-   instead of surfacing in the report, so it needed a code fix, not just a one-off invoice
-   correction:
-   - `freeagent.js` `extractHours`: added a last-resort fallback that matches an hours
-     figure anywhere in the text (not just start/end-anchored), so prose like the above now
-     parses correctly on its own.
-   - `freeagent.js` `ensureCompletionHoursLine(description)` (new, exported): if a
-     completion note doesn't already parse to a billable line but an hours figure can be
-     found anywhere in it, appends a clean `"Complete Nhr."` line. No-op if it already
-     parses, isn't a completion note, or has no hours mentioned at all (genuinely
-     hours-less completions still fall through to the 1hr minimum, correctly).
-   - `agent-runner.js`: `gcal_update_event` now runs `a.description` through
-     `ensureCompletionHoursLine` before writing to the calendar — deterministic, no model
-     cooperation required, same pattern as the `pending_set` auto-fallback.
-   - Verified both changes against the real WO001560 text plus the existing "Done 1hr" /
-     "59BC-1.5hr" / "Hob replaced 2hr" / "Cancelled — ..." patterns — no regressions.
-   - Fixed the live data: `freeagent.js update-invoice` on invoice 94240375 (ref 132) →
-     2hr / £100.00 (was 1hr / £70.00); local ledger (`store.invoiceUpdate` on event
-     `psal5mad1n0porspf4l4n6051k`) updated to match.
+3. **John spotted WO001560 (ref 132) was reported at 2hrs via Telegram ("198c - done -2hrs")
+   but drafted at the 1hr minimum.** Cause: the calendar description was free-text prose
+   ("Complete — confirmed by John via Telegram 2026-08-26. 2hrs.") instead of a clean
+   "Complete Nhr" line — the model didn't follow the "Job completion with hours" format even
+   though the input matched its own worked example (`agent-system-prompt.md:108`), same
+   instruction-non-adherence class as the `pending_set` fix in `77632f2`. Fixed in code
+   (not prompt-only, per that precedent), committed `b08f5bf`:
+   - `freeagent.js` `extractHours`: added a last-resort fallback matching an hours figure
+     anywhere in the text.
+   - `freeagent.js` `ensureCompletionHoursLine(description)` (new): appends a clean
+     "Complete Nhr." line when a completion note has hours but doesn't already parse — no
+     model cooperation required.
+   - `agent-runner.js`: `gcal_update_event` now runs descriptions through
+     `ensureCompletionHoursLine` before writing.
+   - Verified against "Done 1hr" / "59BC-1.5hr" / "Hob replaced 2hr" / "Cancelled — ..." —
+     no regressions.
+4. **Verified all 12 drafts against the fixed parser** (re-ran invoice-run live — 0 new
+   creates, all 12 correctly `already_ledger`, confirming idempotency; then reparsed each
+   event's actual calendar description with the current `freeagent.js` and compared to the
+   ledger). Found a **second** pre-fix casualty: **WO001563 (198C, ref 136)** had the identical
+   prose pattern ("Complete — confirmed by John via Telegram 2026-08-26. 2hrs.") and was also
+   drafted at £70/1hr instead of £100/2hrs.
+5. **Corrected both bad drafts** via `freeagent.js update-invoice` + `store.invoiceUpdate`:
+   - WO001560 (invoice 94240375, ref 132): £70/1hr → **£100/2hrs**
+   - WO001563 (invoice 94240387, ref 136): £70/1hr → **£100/2hrs**
+   Final state of all 12: 10 correctly at £70/1hr (genuinely hours-less notes), 2 corrected to
+   £100/2hrs. Ledger and FreeAgent agree on all 12.
 
 ## Next actions
 
-1. **Commit `agent/freeagent.js` and `agent/agent-runner.js`, then rebuild the property-agent
-   image** — three files now differ from the image (see Current state); the `docker cp`
-   fast-path changes won't survive a container recreate otherwise.
+1. **Rebuild the property-agent image** so it matches the pushed source — `af66ba5` and
+   `b08f5bf` are only `docker cp`'d in, not baked in; a container recreate before rebuilding
+   would revert to the old behaviour.
 2. Watch the next Telegram-driven "done" reply with hours to confirm
-   `ensureCompletionHoursLine` writes a clean line in practice, not just in the unit check
-   run here.
-3. Watch the next real invoice-run (06:00) to confirm minimum-charge drafts create cleanly in
-   FreeAgent and look right to John before they email at 24h.
+   `ensureCompletionHoursLine` writes a clean line in practice (only unit-tested so far).
+3. Watch the next real invoice-run (06:00) to confirm minimum-charge drafts create cleanly and
+   look right to John before they email at 24h.
 4. Investigate/decide on the uncommitted `compose.yml` change (see Current state) — commit or
    revert.
 5. WO-capture parallel run (property-agent native vs `mail-reader`'s `work-order-processor`)
@@ -93,6 +89,10 @@ backlog.**
   invoice-run time (`extractHours` mid-sentence fallback) — both landed 2026-09-04 specifically
   because the model doesn't reliably follow the "write a clean Complete Nhr line" instruction
   even when the input matches its own worked examples. Don't revert to prompt-only enforcement.
+- **`gcal.js list-events` defaults to `--limit 50`** — pass a higher `--limit` explicitly when
+  scanning a wide date range (e.g. `wo-report`/`invoice-run` use their own paging; ad-hoc
+  scripts querying the full `2026-05-01`–present window silently truncate at 50 otherwise, as
+  seen during the 2026-09-04 draft verification).
 - **The local `ob1` container is not a dependency** — not on a reachable network, nothing
   reads `OPEN_BRAIN_MCP_URL`.
 - **`DATABASE_URL` is correct** — `ECONNREFUSED` at boot is a harmless one-shot startup race
