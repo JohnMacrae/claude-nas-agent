@@ -15,6 +15,7 @@ const { PDFParse } = require('pdf-parse');
 const gmail = require('./gmail');
 const store = require('./store');
 const wo = require('./wo');
+const woScanNoise = require('./wo-scan-noise');
 
 const WORK_ORDERS_DIR = process.env.WORK_ORDERS_DIR || '/output/work_orders';
 
@@ -248,6 +249,7 @@ async function run(opts = {}) {
           property_lines: parsed.property_lines,
           order_number: orderNumber,
           subject: detail.subject || '',
+          message_id: m.id,
           propertyRelated,
         });
         continue;
@@ -287,6 +289,15 @@ async function run(opts = {}) {
     }
   }
 
+  // Noise (no WO number, no address at all) re-appears on every scan until
+  // it ages out of the --days search window. Report each such email once —
+  // see wo-scan-noise.js. Dry runs must not mark anything as seen, or a
+  // later real run would silently swallow it.
+  const noiseThisRun = skipped
+    .filter((s) => s.reason === 'no_shortcode' && !s.propertyRelated)
+    .map((s) => ({ message_id: s.message_id, subject: s.subject }));
+  const otherNoiseNew = dryRun ? noiseThisRun : woScanNoise.filterUnseenAndMark(noiseThisRun);
+
   return {
     ok: true,
     dryRun,
@@ -294,6 +305,7 @@ async function run(opts = {}) {
     scanned: seen.size,
     captured,
     skipped,
+    otherNoiseNew,
     pdfsSaved,
     newUrgent,
     urgentReason: newUrgent.length ? `Urgent work orders: ${newUrgent.join(', ')}` : null,
@@ -320,9 +332,13 @@ function formatTelegramReport(result) {
     }
     if (propertyRelated.length > 10) lines.push(`• …+${propertyRelated.length - 10} more`);
   }
-  const otherNoise = noShortcode.length - propertyRelated.length;
-  if (otherNoise > 0) {
-    lines.push(`(${otherNoise} other rentopia.uk PDF(s) ignored — not work orders)`);
+  const otherNoise = result.otherNoiseNew || [];
+  if (otherNoise.length) {
+    lines.push(`${otherNoise.length} other rentopia.uk PDF(s) ignored — not work orders:`);
+    for (const n of otherNoise.slice(0, 10)) {
+      lines.push(`• "${n.subject || '(no subject)'}"`);
+    }
+    if (otherNoise.length > 10) lines.push(`• …+${otherNoise.length - 10} more`);
   }
   if (!lines.length) return null;
   return lines.join('\n');
