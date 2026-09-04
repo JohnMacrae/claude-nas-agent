@@ -14,14 +14,16 @@ uncommitted change: `compose.yml` adds
 env — pre-existing at the start of this session, not part of the invoice-run work below, not
 yet investigated or committed.
 
-**All three code changes are committed and pushed but only `docker cp`'d into the running
-container — the image has not been rebuilt.** A container recreate before rebuilding would
-silently revert to the old (skip-and-underbill) behaviour:
+**Five code changes across four commits are committed and pushed but only `docker cp`'d into
+the running container — the image has not been rebuilt.** A container recreate before
+rebuilding would silently revert all of this to the old behaviour:
 - `agent/invoice-run.js` — minimum-charge fallback (`af66ba5`)
 - `agent/freeagent.js` — `extractHours` mid-sentence fallback + `ensureCompletionHoursLine`
   (`b08f5bf`)
 - `agent/agent-runner.js` — `gcal_update_event` normalizes completion notes via
   `ensureCompletionHoursLine` (`b08f5bf`)
+- `agent/wo-gmail-scan.js` + `agent/wo-scan-noise.js` (new) — ignored non-WO PDFs report their
+  subject once, not a growing count (`a07a675`)
 
 ## What just happened
 
@@ -62,19 +64,38 @@ then verified every draft against the fixed parser.**
    - WO001563 (invoice 94240387, ref 136): £70/1hr → **£100/2hrs**
    Final state of all 12: 10 correctly at £70/1hr (genuinely hours-less notes), 2 corrected to
    £100/2hrs. Ledger and FreeAgent agree on all 12.
+6. **John asked about a different report line — "(9 other rentopia.uk PDF(s) ignored — not
+   work orders)" from `wo-gmail-scan.js`** — explained the `propertyRelated` triage (real WO
+   number or address text found but shortcode lookup failed → flagged individually; neither
+   found at all → counted as noise, since the Gmail search query is deliberately broad and
+   sweeps up non-WO rentopia.uk PDFs). He pointed out the noise count kept growing because the
+   same non-WO email is re-swept every scan while still inside the `--days` window, and asked
+   for the email subject instead of a bare count, reported once only. Fixed and pushed
+   (`a07a675`):
+   - `wo-gmail-scan.js`: `no_shortcode` skip entries now carry `message_id`; `run()` computes
+     `otherNoiseNew` via the seen-set filter (skipped in `--dry-run` so a test run can't
+     swallow a real one); `formatTelegramReport` lists each subject instead of a count.
+   - `wo-scan-noise.js` (new): persisted `Set` of Gmail message ids already reported, stored at
+     `/data/wo-scan-noise-seen.json` (same file-based pattern as `pending.js`).
+   - Verified: isolated unit test of the seen-set (`filterUnseenAndMark`) — second call with an
+     overlapping id set returns only the genuinely new entry; live dry-run against real Gmail
+     data confirmed subjects render correctly (payment authorisations, invoice forwards, rental
+     references — all genuinely not work orders).
 
 ## Next actions
 
-1. **Rebuild the property-agent image** so it matches the pushed source — `af66ba5` and
-   `b08f5bf` are only `docker cp`'d in, not baked in; a container recreate before rebuilding
+1. **Rebuild the property-agent image** so it matches the pushed source — `af66ba5`, `b08f5bf`,
+   `a07a675` are only `docker cp`'d in, not baked in; a container recreate before rebuilding
    would revert to the old behaviour.
 2. Watch the next Telegram-driven "done" reply with hours to confirm
    `ensureCompletionHoursLine` writes a clean line in practice (only unit-tested so far).
 3. Watch the next real invoice-run (06:00) to confirm minimum-charge drafts create cleanly and
    look right to John before they email at 24h.
-4. Investigate/decide on the uncommitted `compose.yml` change (see Current state) — commit or
+4. Watch the next real (non-dry) `wo-gmail-scan.js` run to confirm the noise dedup holds up
+   outside the isolated unit test and dry-run.
+5. Investigate/decide on the uncommitted `compose.yml` change (see Current state) — commit or
    revert.
-5. WO-capture parallel run (property-agent native vs `mail-reader`'s `work-order-processor`)
+6. WO-capture parallel run (property-agent native vs `mail-reader`'s `work-order-processor`)
    — compare a few more days of logs before retiring the old Python container.
 
 ## Do not re-litigate
@@ -89,6 +110,10 @@ then verified every draft against the fixed parser.**
   invoice-run time (`extractHours` mid-sentence fallback) — both landed 2026-09-04 specifically
   because the model doesn't reliably follow the "write a clean Complete Nhr line" instruction
   even when the input matches its own worked examples. Don't revert to prompt-only enforcement.
+- **`wo-gmail-scan.js` noise PDFs are reported once, ever, not on every scan** — see
+  `wo-scan-noise.js`; if the noise report looks wrong (missing an entry that should reappear,
+  or a real WO wrongly landing in "noise"), check `/data/wo-scan-noise-seen.json` and the
+  `propertyRelated` split in `wo-gmail-scan.js:240-252` before assuming it's a new bug.
 - **`gcal.js list-events` defaults to `--limit 50`** — pass a higher `--limit` explicitly when
   scanning a wide date range (e.g. `wo-report`/`invoice-run` use their own paging; ad-hoc
   scripts querying the full `2026-05-01`–present window silently truncate at 50 otherwise, as
@@ -117,6 +142,8 @@ then verified every draft against the fixed parser.**
   2026-09-04)
 - `agent/agent-runner.js` — `gcal_update_event` case now calls
   `freeagent.ensureCompletionHoursLine` before writing
+- `agent/wo-gmail-scan.js` / `agent/wo-scan-noise.js` — Gmail WO capture; noise-PDF report-once
+  dedup (new, 2026-09-04)
 - `agent/wo-report.js` / `agent/wo-colour.js` — separate "still open" report; shares the
   `done`/`complete[d]`/`cancelled` completion heuristic with invoice-run but has no concept of
   billing state — a job marked done never appears there regardless of invoicing outcome
