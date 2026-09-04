@@ -145,6 +145,15 @@ function extractHours(text) {
   if (m && !/^(done|complete[d]?|cancelled)$/i.test(m[1].trim())) {
     return { hours: parseFloat(m[2]), label: m[1].trim() || 'Labour' };
   }
+  // Last resort: an hours figure anywhere mid-sentence, e.g. "Complete —
+  // confirmed by John via Telegram 2026-08-26. 2hrs." None of the patterns
+  // above anchor mid-line, so free text describing the completion (rather
+  // than a clean "Done 2hr" line) would otherwise parse as a non-billable
+  // comment.
+  m = text.match(new RegExp(`\\b([\\d.]+)\\s*${HOUR_UNIT}\\b`, 'i'));
+  if (m) {
+    return { hours: parseFloat(m[1]), label: 'Labour' };
+  }
   return null;
 }
 
@@ -266,6 +275,29 @@ function notesToInvoiceItems(notes, fallbackDescription, opts = {}) {
   }
 
   return invoice_items;
+}
+
+// Deterministic safety net for Telegram-driven completions: the model is
+// meant to write completion notes as a clean "Complete Nhr" line (see
+// agent-system-prompt.md "Job completion with hours"), but doesn't always
+// follow that — e.g. "Complete — confirmed by John via Telegram 2026-08-26.
+// 2hrs." parses fine now that extractHours has a mid-sentence fallback, but
+// this guards against phrasing that fallback still misses by appending an
+// explicit line derived from whatever hours figure it can find, rather than
+// relying on the model to reformat. No-op if the notes already parse to a
+// billable line, or contain no completion marker, or no hours figure at all
+// (a genuinely hours-less completion — left for the invoice-run minimum
+// charge, not this function's job to invent a number).
+function ensureCompletionHoursLine(description) {
+  if (!description || !/(?:^|\n|\.\s+)(done|complete[d]?)\b/i.test(description)) {
+    return description;
+  }
+  if (billableItems(notesToInvoiceItems(description, '', { allowMinimum: false })).length) {
+    return description;
+  }
+  const found = extractHours(description);
+  if (!found) return description;
+  return `${description}\n\nComplete ${found.hours}hr.`;
 }
 
 function billableItems(invoiceItems) {
@@ -492,6 +524,7 @@ if (require.main !== module) {
     parseLineSegment,
     buildInvoiceItems,
     notesToInvoiceItems,
+    ensureCompletionHoursLine,
     billableItems,
     netFromItems,
     createInvoice,

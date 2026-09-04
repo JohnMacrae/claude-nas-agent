@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const pending = require('./pending');
+const freeagent = require('./freeagent');
 
 const AGENT_DIR = process.env.AGENT_DIR || path.dirname(__filename);
 const LLM_BACKEND = (process.env.LLM_BACKEND || 'openrouter').toLowerCase();
@@ -612,7 +613,12 @@ async function executeTool(name, args, context = {}) {
         '--calendar', a.calendar || 'Maintenance',
         '--event-id', a.event_id || '',
       ];
-      if (a.description != null) argv.push('--description', a.description);
+      // Guard against the model writing a completion note whose hours don't
+      // parse (prose instead of a clean "Complete Nhr" line) — see NEXT.md
+      // 2026-09-04. Appends a normalized line when needed; no-op otherwise.
+      if (a.description != null) {
+        argv.push('--description', freeagent.ensureCompletionHoursLine(a.description));
+      }
       if (a.summary) argv.push('--summary', a.summary);
       return runCmd(path.join(AGENT_DIR, 'gcal.js'), argv);
     }
